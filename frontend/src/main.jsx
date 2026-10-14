@@ -52,6 +52,7 @@ function App() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [ndviResult, setNdviResult] = useState(null);
 
   function update(event) {
     setForm({
@@ -65,6 +66,7 @@ function App() {
     setLoading(true);
     setError("");
     setResult(null);
+    setNdviResult(null);
 
     try {
       const response = await fetch(`${API}/api/assess`, {
@@ -88,6 +90,23 @@ function App() {
       }
 
       setResult(body);
+      // Retrieve satellite evidence for the selected field and dates.
+const ndviResponse = await fetch(
+  `${API}/api/ndvi?${new URLSearchParams({
+    latitude: String(form.latitude),
+    longitude: String(form.longitude),
+    start_date: form.start_date,
+    end_date: form.end_date,
+  })}`
+);
+
+const ndviBody = await ndviResponse.json();
+
+if (!ndviResponse.ok) {
+  throw new Error(ndviBody.detail || "Satellite request failed");
+}
+
+setNdviResult(ndviBody);
     } catch (err) {
       setError(
         `${err.message}. Check that the FastAPI backend is running at ${API}.`
@@ -301,7 +320,7 @@ function App() {
             {result && (
               <div className="report">
                 <div className="warning-banner">
-                  DEMO MODE · SATELLITE DATA NOT CONNECTED
+                  PROTOTYPE · EVIDENCE REQUIRES VALIDATION
                 </div>
 
                 <div className="status-row">
@@ -330,6 +349,51 @@ function App() {
                     </strong>
                   </div>
                 </div>
+
+                
+<h3>Satellite evidence · Sentinel-2</h3>
+
+{!ndviResult ? (
+  <p className="muted">
+    Satellite evidence has not been loaded yet.
+  </p>
+) : (
+  <div className="metric-grid">
+    <div className="metric">
+      <small>Mean NDVI</small>
+      <strong>
+        {ndviResult.ndvi_mean == null
+          ? "Unavailable"
+          : ndviResult.ndvi_mean.toFixed(4)}
+      </strong>
+    </div>
+
+    <div className="metric">
+      <small>Satellite scenes</small>
+      <strong>{ndviResult.image_count ?? 0}</strong>
+    </div>
+
+    <div className="metric">
+      <small>Satellite status</small>
+      <strong>{ndviResult.status}</strong>
+    </div>
+  </div>
+)}
+
+{ndviResult?.message && (
+  <p className="muted">{ndviResult.message}</p>
+)}
+
+{ndviResult && (
+  <p className="muted">
+    Source: {ndviResult.source || "Sentinel-2"}
+    <br />
+    Period: {ndviResult.start_date} to {ndviResult.end_date}
+    <br />
+    NDVI indicates vegetation conditions; it does not independently
+    establish crop loss.
+  </p>
+)}
 
                 <h3>What this means</h3>
                 <p>{result.assessment.explanation}</p>

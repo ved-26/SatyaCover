@@ -1,6 +1,9 @@
 from datetime import date
 from typing import Literal
-
+from app.earth_engine import (
+    initialize_earth_engine,
+    get_ndvi_summary,
+)
 import requests
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -93,10 +96,10 @@ def get_weather(
     }
 
 
+
 @app.post("/api/assess")
 def assess(request: AssessmentRequest):
-    # Deliberately transparent placeholder. Replace this with real satellite
-    # observations, a field-specific baseline, and a validated model.
+    # Retrieve historical weather.
     try:
         weather = get_weather(
             latitude=request.latitude,
@@ -108,12 +111,38 @@ def assess(request: AssessmentRequest):
         weather = {"daily": [], "source": "Unavailable"}
 
     daily = weather.get("daily", [])
-    rainfall = [r["precipitation_mm"] for r in daily if isinstance(r.get("precipitation_mm"), (int, float))]
+    rainfall = [
+        row["precipitation_mm"]
+        for row in daily
+        if isinstance(row.get("precipitation_mm"), (int, float))
+    ]
     total_rainfall = round(sum(rainfall), 2) if rainfall else None
+
+    # Retrieve satellite vegetation evidence.
+    try:
+        initialize_earth_engine()
+        satellite = get_ndvi_summary(
+            latitude=request.latitude,
+            longitude=request.longitude,
+            start_date=request.start_date.isoformat(),
+            end_date=request.end_date.isoformat(),
+        )
+    except Exception:
+        satellite = {
+            "status": "UNAVAILABLE",
+            "message": "Satellite data could not be retrieved for this request.",
+            "image_count": 0,
+            "ndvi_mean": None,
+        }
+
+    satellite_available = (
+        satellite.get("status") == "SUCCESS"
+        and satellite.get("ndvi_mean") is not None
+    )
 
     return {
         "project": "SatyaCover",
-        "mode": "DEMO — satellite data not connected",
+        "mode": "PROTOTYPE — satellite and weather evidence",
         "field": {
             "latitude": request.latitude,
             "longitude": request.longitude,
@@ -126,20 +155,75 @@ def assess(request: AssessmentRequest):
             "days_returned": len(daily),
             "total_precipitation_mm": total_rainfall,
         },
-        "satellite_evidence": None,
+        "satellite_evidence": satellite,
         "assessment": {
-            "status": "INSUFFICIENT DATA",
+            "status": (
+                "EVIDENCE AVAILABLE — LOSS ASSESSMENT PENDING"
+                if satellite_available
+                else "INSUFFICIENT DATA"
+            ),
             "loss_severity": None,
             "confidence": None,
             "payout_estimate": None,
             "explanation": (
-                "This prototype has not yet analyzed satellite crop-health observations. "
-                "No crop-loss percentage or insurance payout is inferred from weather alone."
+                "Sentinel-2 vegetation evidence is available for this "
+                "location and period. Crop-loss assessment still requires "
+                "a suitable historical vegetation baseline, crop and "
+                "season context, and validation. NDVI alone does not "
+                "prove crop loss."
+                if satellite_available
+                else
+                "Usable satellite vegetation evidence is not available "
+                "for this request. No crop-loss percentage or insurance "
+                "payout is inferred from weather alone."
             ),
         },
-        "next_step": "Connect cloud-masked Sentinel-2 NDVI time series and compare them with a historical baseline.",
-        "disclaimer": "Not an official crop-loss assessment, insurance decision, or payout guarantee.",
+        "next_step": (
+            "Compare vegetation observations with a suitable historical "
+            "baseline for the same field, crop, and growing season."
+        ),
+        "disclaimer": (
+            "Prototype only. This is not an official crop-loss assessment, "
+            "insurance decision, or payout guarantee."
+        ),
     }
+
+@app.get("/api/ndvi")
+def get_ndvi(
+    latitude: float = Query(ge=-90, le=90),
+    longitude: float = Query(ge=-180, le=180),
+    start_date: date = Query(),
+    end_date: date = Query(),
+):
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=400,
+            detail="start_date must be on or before end_date",
+        )
+
+    if (end_date - start_date).days > 400:
+        raise HTTPException(
+            status_code=400,
+            detail="Choose a period of 400 days or less for the MVP",
+        )
+
+    try:
+        initialize_earth_engine()
+
+        return get_ndvi_summary(
+            latitude=latitude,
+            longitude=longitude,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Satellite data request failed. Check Earth Engine connectivity and try again.",
+        ) from exc
+
 
 
 def _at(values, index):
