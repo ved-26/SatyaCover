@@ -118,3 +118,82 @@ def get_ndvi_summary(
             "Vegetation index only; not standalone proof of crop loss."
         ),
     }
+
+
+def compare_with_historical_baseline(
+    latitude: float,
+    longitude: float,
+    start_date: str,
+    end_date: str,
+    buffer_meters: int = 100,
+):
+    """
+    Compare current-period NDVI with the same calendar period
+    one year earlier.
+
+    This is an initial baseline, not a validated crop-loss model.
+    """
+    start = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end = datetime.strptime(end_date, "%Y-%m-%d").date()
+
+    # Construct the equivalent period from the previous year.
+    try:
+        historical_start = start.replace(year=start.year - 1)
+        historical_end = end.replace(year=end.year - 1)
+    except ValueError:
+        # Handle February 29 when the previous year is not a leap year.
+        from calendar import monthrange
+
+        historical_start = start.replace(
+            year=start.year - 1,
+            day=min(start.day, monthrange(start.year - 1, start.month)[1]),
+        )
+        historical_end = end.replace(
+            year=end.year - 1,
+            day=min(end.day, monthrange(end.year - 1, end.month)[1]),
+        )
+
+    current = get_ndvi_summary(
+        latitude,
+        longitude,
+        start_date,
+        end_date,
+        buffer_meters,
+    )
+
+    historical = get_ndvi_summary(
+        latitude,
+        longitude,
+        historical_start.isoformat(),
+        historical_end.isoformat(),
+        buffer_meters,
+    )
+
+    current_ndvi = current.get("ndvi_mean")
+    historical_ndvi = historical.get("ndvi_mean")
+
+    if current_ndvi is None or historical_ndvi is None:
+        return {
+            "status": "INSUFFICIENT_DATA",
+            "current_period": current,
+            "historical_baseline": historical,
+            "ndvi_change": None,
+            "message": (
+                "A comparison could not be calculated because valid "
+                "NDVI data was unavailable for one or both periods."
+            ),
+        }
+
+    ndvi_change = round(current_ndvi - historical_ndvi, 4)
+
+    return {
+        "status": "SUCCESS",
+        "current_period": current,
+        "historical_baseline": historical,
+        "ndvi_change": ndvi_change,
+        "message": (
+            "NDVI change is a vegetation indicator, not standalone "
+            "proof of crop loss. Differences in crop stage, weather, "
+            "and observation conditions must be considered."
+        ),
+    }

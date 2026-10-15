@@ -61,12 +61,14 @@ function App() {
     });
   }
 
+
   async function runAssessment(event) {
     event.preventDefault();
     setLoading(true);
     setError("");
     setResult(null);
     setNdviResult(null);
+
 
     try {
       const response = await fetch(`${API}/api/assess`, {
@@ -90,23 +92,7 @@ function App() {
       }
 
       setResult(body);
-      // Retrieve satellite evidence for the selected field and dates.
-const ndviResponse = await fetch(
-  `${API}/api/ndvi?${new URLSearchParams({
-    latitude: String(form.latitude),
-    longitude: String(form.longitude),
-    start_date: form.start_date,
-    end_date: form.end_date,
-  })}`
-);
-
-const ndviBody = await ndviResponse.json();
-
-if (!ndviResponse.ok) {
-  throw new Error(ndviBody.detail || "Satellite request failed");
-}
-
-setNdviResult(ndviBody);
+      
     } catch (err) {
       setError(
         `${err.message}. Check that the FastAPI backend is running at ${API}.`
@@ -119,7 +105,7 @@ setNdviResult(ndviBody);
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand-mark">SC</div>
+        async function runAssessment(event)<div className="brand-mark">SC</div>
 
         <div>
           <div className="brand-name">SatyaCover</div>
@@ -351,48 +337,105 @@ setNdviResult(ndviBody);
                 </div>
 
                 
+
 <h3>Satellite evidence · Sentinel-2</h3>
 
-{!ndviResult ? (
+{!result?.satellite_evidence ? (
   <p className="muted">
-    Satellite evidence has not been loaded yet.
+    Satellite evidence is unavailable for this assessment.
   </p>
 ) : (
-  <div className="metric-grid">
-    <div className="metric">
-      <small>Mean NDVI</small>
-      <strong>
-        {ndviResult.ndvi_mean == null
-          ? "Unavailable"
-          : ndviResult.ndvi_mean.toFixed(4)}
-      </strong>
+  <>
+    <div className="metric-grid">
+      <div className="metric">
+        <small>Current mean NDVI</small>
+        <strong>
+          {result.satellite_evidence.ndvi_mean == null
+            ? "Unavailable"
+            : Number(result.satellite_evidence.ndvi_mean).toFixed(4)}
+        </strong>
+      </div>
+
+      <div className="metric">
+        <small>Satellite scenes</small>
+        <strong>{result.satellite_evidence.image_count ?? 0}</strong>
+      </div>
+
+      <div className="metric">
+        <small>Satellite status</small>
+        <strong>{result.satellite_evidence.status ?? "Unknown"}</strong>
+      </div>
     </div>
 
-    <div className="metric">
-      <small>Satellite scenes</small>
-      <strong>{ndviResult.image_count ?? 0}</strong>
-    </div>
+    <p className="muted">
+      Source: {result.satellite_evidence.source ?? "Sentinel-2"}
+    </p>
 
-    <div className="metric">
-      <small>Satellite status</small>
-      <strong>{ndviResult.status}</strong>
-    </div>
-  </div>
-)}
+    <p className="muted">
+      Observation period:{" "}
+      {result.satellite_evidence.start_date ?? result.field?.start_date}
+      {" to "}
+      {result.satellite_evidence.end_date ?? result.field?.end_date}
+    </p>
 
-{ndviResult?.message && (
-  <p className="muted">{ndviResult.message}</p>
-)}
+    <h3>Historical vegetation comparison</h3>
 
-{ndviResult && (
-  <p className="muted">
-    Source: {ndviResult.source || "Sentinel-2"}
-    <br />
-    Period: {ndviResult.start_date} to {ndviResult.end_date}
-    <br />
-    NDVI indicates vegetation conditions; it does not independently
-    establish crop loss.
-  </p>
+    {!result.historical_comparison ||
+    result.historical_comparison.status !== "SUCCESS" ? (
+      <p className="muted">
+        Historical comparison is unavailable. Both periods need usable
+        satellite observations.
+      </p>
+    ) : (
+      <>
+        <div className="metric-grid">
+          <div className="metric">
+            <small>Current NDVI</small>
+            <strong>
+              {Number(
+                result.historical_comparison.current_period.ndvi_mean
+              ).toFixed(4)}
+            </strong>
+          </div>
+
+          <div className="metric">
+            <small>Historical NDVI</small>
+            <strong>
+              {Number(
+                result.historical_comparison.historical_baseline.ndvi_mean
+              ).toFixed(4)}
+            </strong>
+          </div>
+
+          <div className="metric">
+            <small>NDVI change</small>
+            <strong>
+              {result.historical_comparison.ndvi_change > 0 ? "+" : ""}
+              {Number(
+                result.historical_comparison.ndvi_change
+              ).toFixed(4)}
+            </strong>
+          </div>
+        </div>
+
+        <p className="muted">
+          Historical period:{" "}
+          {result.historical_comparison.historical_baseline.start_date}
+          {" to "}
+          {result.historical_comparison.historical_baseline.end_date}
+        </p>
+
+        <p className="muted">
+          {result.historical_comparison.message}
+        </p>
+      </>
+    )}
+
+    <p className="muted">
+      NDVI differences indicate vegetation changes and do not independently
+      prove crop loss.
+    </p>
+  </>
 )}
 
                 <h3>What this means</h3>

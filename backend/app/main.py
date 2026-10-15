@@ -3,6 +3,7 @@ from typing import Literal
 from app.earth_engine import (
     initialize_earth_engine,
     get_ndvi_summary,
+    compare_with_historical_baseline,
 )
 import requests
 from fastapi import FastAPI, HTTPException, Query
@@ -140,6 +141,25 @@ def assess(request: AssessmentRequest):
         and satellite.get("ndvi_mean") is not None
     )
 
+    
+    # Compare current vegetation with the same period last year.
+    try:
+        historical_comparison = compare_with_historical_baseline(
+            latitude=request.latitude,
+            longitude=request.longitude,
+            start_date=request.start_date.isoformat(),
+            end_date=request.end_date.isoformat(),
+        )
+    except Exception:
+        historical_comparison = {
+            "status": "UNAVAILABLE",
+            "ndvi_change": None,
+            "message": (
+                "Historical vegetation comparison could not be retrieved."
+            ),
+        }
+
+
     return {
         "project": "SatyaCover",
         "mode": "PROTOTYPE — satellite and weather evidence",
@@ -156,6 +176,7 @@ def assess(request: AssessmentRequest):
             "total_precipitation_mm": total_rainfall,
         },
         "satellite_evidence": satellite,
+        "historical_comparison": historical_comparison,
         "assessment": {
             "status": (
                 "EVIDENCE AVAILABLE — LOSS ASSESSMENT PENDING"
