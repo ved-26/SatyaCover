@@ -54,6 +54,27 @@ function App() {
   const [error, setError] = useState("");
   const [ndviResult, setNdviResult] = useState(null);
 
+  
+function validateAssessmentDates(startDate, endDate) {
+  if (!startDate || !endDate) {
+    return "Please select both observation dates.";
+  }
+
+  if (endDate < startDate) {
+    return "End date must be on or after the start date.";
+  }
+
+  const start = new Date(`${startDate}T00:00:00`);
+  const end = new Date(`${endDate}T00:00:00`);
+  const days = Math.round((end - start) / (1000 * 60 * 60 * 24)) + 1;
+
+  if (days > 366) {
+    return "Please select a period of 366 days or less.";
+  }
+
+  return "";
+}
+
   function update(event) {
     setForm({
       ...form,
@@ -64,6 +85,16 @@ function App() {
 
   async function runAssessment(event) {
     event.preventDefault();
+    const dateError = validateAssessmentDates(
+  form.start_date,
+  form.end_date
+);
+
+if (dateError) {
+  setResult(null);
+  setError(dateError);
+  return;
+}
     setLoading(true);
     setError("");
     setResult(null);
@@ -257,11 +288,32 @@ function App() {
                 </label>
               </div>
 
-              <div className="coordinate-note">
-                Example coordinates are near Pune city, not a
-                verified farm boundary. Replace them with your
-                selected field.
-              </div>
+              
+<div className="coordinate-note">
+  <strong>Field boundary not verified</strong>
+  <p>
+    The map currently selects a point, not the outline of the
+    farm. Satellite analysis uses a 100-metre buffer around that
+    point, which may include roads, nearby fields, buildings,
+    or other land.
+  </p>
+  <p>
+    For a field-specific assessment, provide the actual field
+    boundary and ensure the satellite analysis uses that geometry.
+  </p>
+</div>
+
+
+<div className="evidence-note">
+  <strong>Crop-season validation required</strong>
+  <p>
+    Confirm that the observation dates match the selected crop's
+    actual growing season in the field's location. Matching
+    calendar dates across years does not guarantee matching crop
+    growth stages.
+  </p>
+</div>
+
 
               <button disabled={loading} type="submit">
                 {loading ? "Analyzing…" : "Run assessment"}
@@ -318,23 +370,43 @@ function App() {
                   </div>
                 </div>
 
-                <div className="metric-grid">
-                  <div className="metric">
-                    <small>Rainfall in period</small>
-                    <strong>
-                      {result.weather_summary.total_precipitation_mm == null
-                        ? "Unavailable"
-                        : `${result.weather_summary.total_precipitation_mm} mm`}
-                    </strong>
-                  </div>
+                
+<div className="metric-grid">
+  <div className="metric">
+    <small>Total rainfall in period</small>
+    <strong>
+      {result.weather_summary.total_precipitation_mm == null
+        ? "Unavailable"
+        : `${Number(
+            result.weather_summary.total_precipitation_mm
+          ).toFixed(1)} mm`}
+    </strong>
+  </div>
 
-                  <div className="metric">
-                    <small>Weather records</small>
-                    <strong>
-                      {result.weather_summary.days_returned}
-                    </strong>
-                  </div>
-                </div>
+  <div className="metric">
+    <small>Weather records</small>
+    <strong>
+      {result.weather_summary.days_returned ?? "Unavailable"}
+    </strong>
+  </div>
+</div>
+
+<div className="evidence-note">
+  <strong>How to interpret rainfall</strong>
+  <p>
+    Rainfall provides supporting weather evidence for the selected
+    observation period. Its effect on a crop depends on rainfall
+    timing, soil drainage, crop growth stage, and local conditions.
+    Total rainfall alone does not establish flooding, crop damage,
+    or crop loss.
+  </p>
+  <p className="muted">
+    Weather source:{" "}
+    {result.weather_summary.source || "Source not specified"}.
+    Values represent the returned weather data for the selected period.
+  </p>
+</div>
+
 
                 
 
@@ -378,58 +450,117 @@ function App() {
       {result.satellite_evidence.end_date ?? result.field?.end_date}
     </p>
 
-    <h3>Historical vegetation comparison</h3>
 
-    {!result.historical_comparison ||
-    result.historical_comparison.status !== "SUCCESS" ? (
-      <p className="muted">
-        Historical comparison is unavailable. Both periods need usable
-        satellite observations.
+<h3>Historical vegetation comparison</h3>
+
+{!result.historical_comparison ||
+result.historical_comparison.status !== "SUCCESS" ? (
+  <p className="muted">
+    Historical comparison is unavailable. Usable current and
+    historical satellite observations are required.
+  </p>
+) : (
+  <>
+    <div className="metric-grid">
+      <div className="metric">
+        <small>Current NDVI</small>
+        <strong>
+          {Number(
+            result.historical_comparison.current_period.ndvi_mean
+          ).toFixed(4)}
+        </strong>
+      </div>
+
+      <div className="metric">
+        <small>Multi-year baseline</small>
+        <strong>
+          {Number(
+            result.historical_comparison.historical_average_ndvi
+          ).toFixed(4)}
+        </strong>
+      </div>
+
+      <div className="metric">
+        <small>NDVI change</small>
+        <strong>
+          {result.historical_comparison.ndvi_change > 0 ? "+" : ""}
+          {Number(
+            result.historical_comparison.ndvi_change
+          ).toFixed(4)}
+        </strong>
+      </div>
+    </div>
+
+    <p className="muted">
+      Historical years available:{" "}
+      {result.historical_comparison.historical_years_available}
+      {" / "}
+      {result.historical_comparison.historical_years_requested}
+    </p>
+
+    {result.historical_comparison.historical_periods.map((period) => (
+      <p className="muted" key={period.year}>
+        {period.year}:{" "}
+        {period.ndvi_mean == null
+          ? "NDVI unavailable"
+          : `NDVI ${Number(period.ndvi_mean).toFixed(4)}`}
+        {" · "}
+        {period.image_count} satellite scenes
       </p>
-    ) : (
-      <>
-        <div className="metric-grid">
-          <div className="metric">
-            <small>Current NDVI</small>
-            <strong>
-              {Number(
-                result.historical_comparison.current_period.ndvi_mean
-              ).toFixed(4)}
-            </strong>
+    ))}
+
+    <p className="muted">
+      {result.historical_comparison.message}
+    </p>
+  </>
+)}
+
+<h3>NDVI trend by year</h3>
+
+{result.historical_comparison?.status === "SUCCESS" && (
+  <div className="ndvi-chart">
+    {[
+      ...result.historical_comparison.historical_periods,
+      {
+        year: Number(
+          result.historical_comparison.current_period.start_date.slice(0, 4)
+        ),
+        ndvi:
+          result.historical_comparison.current_period.ndvi_mean,
+        image_count:
+          result.historical_comparison.current_period.image_count,
+      },
+    ]
+      .sort((a, b) => a.year - b.year)
+      .map((period) => {
+        const value = period.ndvi_mean ?? period.ndvi;
+
+        return (
+          <div className="ndvi-bar-item" key={period.year}>
+            <strong>{value == null ? "N/A" : value.toFixed(4)}</strong>
+
+            <div className="ndvi-bar-track">
+              <div
+                className="ndvi-bar"
+                style={{
+                  height: `${Math.max(0, Math.min(100, (value ?? 0) * 100))}%`,
+                }}
+              />
+            </div>
+
+            <span>{period.year}</span>
           </div>
+        );
+      })}
+  </div>
+)}
 
-          <div className="metric">
-            <small>Historical NDVI</small>
-            <strong>
-              {Number(
-                result.historical_comparison.historical_baseline.ndvi_mean
-              ).toFixed(4)}
-            </strong>
-          </div>
+<p className="muted">
+  The chart compares mean NDVI for matching calendar periods.
+  Differences may reflect crop stage, weather, or observation conditions;
+  they do not independently establish crop loss.
+</p>
 
-          <div className="metric">
-            <small>NDVI change</small>
-            <strong>
-              {result.historical_comparison.ndvi_change > 0 ? "+" : ""}
-              {Number(
-                result.historical_comparison.ndvi_change
-              ).toFixed(4)}
-            </strong>
-          </div>
-        </div>
-
-        <p className="muted">
-          Historical period:{" "}
-          {result.historical_comparison.historical_baseline.start_date}
-          {" to "}
-          {result.historical_comparison.historical_baseline.end_date}
-        </p>
-
-        <p className="muted">
-          {result.historical_comparison.message}
-        </p>
-      </>
-    )}
 
     <p className="muted">
       NDVI differences indicate vegetation changes and do not independently
@@ -438,8 +569,66 @@ function App() {
   </>
 )}
 
-                <h3>What this means</h3>
-                <p>{result.assessment.explanation}</p>
+                
+<h3>What this means</h3>
+
+{result.historical_comparison?.status === "SUCCESS" ? (
+  <div className="evidence-note">
+    <p>
+      The current mean NDVI is{" "}
+      <strong>
+        {Number(
+          result.historical_comparison.current_period.ndvi_mean
+        ).toFixed(4)}
+      </strong>
+      , compared with a historical average of{" "}
+      <strong>
+        {Number(
+          result.historical_comparison.historical_average_ndvi
+        ).toFixed(4)}
+      </strong>
+      .
+    </p>
+
+    <p>
+      The difference is{" "}
+      <strong>
+        {result.historical_comparison.ndvi_change > 0 ? "+" : ""}
+        {Number(
+          result.historical_comparison.ndvi_change
+        ).toFixed(4)}
+      </strong>
+      . This indicates that the observed vegetation index is
+      {result.historical_comparison.ndvi_change < 0
+        ? " lower "
+        : result.historical_comparison.ndvi_change > 0
+          ? " higher "
+          : " equal to "}
+      the historical average for the selected calendar period.
+    </p>
+
+    <p>
+      Rainfall during the period was{" "}
+      <strong>
+        {result.weather_summary.total_precipitation_mm == null
+          ? "unavailable"
+          : `${Number(
+              result.weather_summary.total_precipitation_mm
+            ).toFixed(1)} mm`}
+      </strong>
+      . This is supporting weather evidence, not proof of crop damage.
+    </p>
+
+    <p>
+      These observations do not independently confirm crop loss.
+      Crop type, actual field boundaries, crop growth stage, and
+      local conditions need to be checked before drawing conclusions.
+    </p>
+  </div>
+) : (
+  <p>{result.assessment.explanation}</p>
+)}
+
 
                 <h3>Next evidence needed</h3>
                 <p>{result.next_step}</p>

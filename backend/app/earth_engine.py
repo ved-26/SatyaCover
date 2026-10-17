@@ -120,38 +120,29 @@ def get_ndvi_summary(
     }
 
 
+
 def compare_with_historical_baseline(
     latitude: float,
     longitude: float,
     start_date: str,
     end_date: str,
     buffer_meters: int = 100,
+    baseline_years: int = 3,
 ):
     """
-    Compare current-period NDVI with the same calendar period
-    one year earlier.
+    Compare current-period NDVI with the average of matching
+    calendar periods from previous years with usable observations.
 
-    This is an initial baseline, not a validated crop-loss model.
+    This is an evidence indicator, not a validated crop-loss model.
     """
+    if not 1 <= baseline_years <= 10:
+        raise ValueError("baseline_years must be between 1 and 10.")
+
     start = datetime.strptime(start_date, "%Y-%m-%d").date()
     end = datetime.strptime(end_date, "%Y-%m-%d").date()
 
-    # Construct the equivalent period from the previous year.
-    try:
-        historical_start = start.replace(year=start.year - 1)
-        historical_end = end.replace(year=end.year - 1)
-    except ValueError:
-        # Handle February 29 when the previous year is not a leap year.
-        from calendar import monthrange
-
-        historical_start = start.replace(
-            year=start.year - 1,
-            day=min(start.day, monthrange(start.year - 1, start.month)[1]),
-        )
-        historical_end = end.replace(
-            year=end.year - 1,
-            day=min(end.day, monthrange(end.year - 1, end.month)[1]),
-        )
+    if end < start:
+        raise ValueError("End date must be on or after start date.")
 
     current = get_ndvi_summary(
         latitude,
@@ -161,39 +152,94 @@ def compare_with_historical_baseline(
         buffer_meters,
     )
 
-    historical = get_ndvi_summary(
-        latitude,
-        longitude,
-        historical_start.isoformat(),
-        historical_end.isoformat(),
-        buffer_meters,
-    )
+    historical_periods = []
+
+    for years_back in range(1, baseline_years + 1):
+        try:
+            historical_start = start.replace(year=start.year - years_back)
+        except ValueError:
+            from calendar import monthrange
+
+            historical_start = start.replace(
+                year=start.year - years_back,
+                day=min(
+                    start.day,
+                    monthrange(start.year - years_back, start.month)[1],
+                ),
+            )
+
+        try:
+            historical_end = end.replace(year=end.year - years_back)
+        except ValueError:
+            from calendar import monthrange
+
+            historical_end = end.replace(
+                year=end.year - years_back,
+                day=min(
+                    end.day,
+                    monthrange(end.year - years_back, end.month)[1],
+                ),
+            )
+
+        historical = get_ndvi_summary(
+            latitude,
+            longitude,
+            historical_start.isoformat(),
+            historical_end.isoformat(),
+            buffer_meters,
+        )
+
+        historical_periods.append({
+            "year": historical_start.year,
+            "start_date": historical_start.isoformat(),
+            "end_date": historical_end.isoformat(),
+            "status": historical.get("status"),
+            "image_count": historical.get("image_count", 0),
+            "ndvi_mean": historical.get("ndvi_mean"),
+        })
+
+    valid_periods = [
+        period for period in historical_periods
+        if period["status"] == "SUCCESS"
+        and period["ndvi_mean"] is not None
+    ]
 
     current_ndvi = current.get("ndvi_mean")
-    historical_ndvi = historical.get("ndvi_mean")
 
-    if current_ndvi is None or historical_ndvi is None:
-        return {
-            "status": "INSUFFICIENT_DATA",
-            "current_period": current,
-            "historical_baseline": historical,
-            "ndvi_change": None,
-            "message": (
-                "A comparison could not be calculated because valid "
-                "NDVI data was unavailable for one or both periods."
-            ),
-        }
+    historical_average = None
+    ndvi_change = None
 
-    ndvi_change = round(current_ndvi - historical_ndvi, 4)
+    if valid_periods:
+        historical_average = round(
+            sum(period["ndvi_mean"] for period in valid_periods)
+            / len(valid_periods),
+            4,
+        )
+
+    if current_ndvi is not None and historical_average is not None:
+        ndvi_change = round(current_ndvi - historical_average, 4)
+
+    comparison_success = (
+        current_ndvi is not None
+        and historical_average is not None
+    )
 
     return {
-        "status": "SUCCESS",
+        "status": "SUCCESS" if comparison_success else "INSUFFICIENT_DATA",
         "current_period": current,
-        "historical_baseline": historical,
+        "historical_periods": historical_periods,
+        "historical_years_requested": baseline_years,
+        "historical_years_available": len(valid_periods),
+        "historical_average_ndvi": historical_average,
         "ndvi_change": ndvi_change,
         "message": (
-            "NDVI change is a vegetation indicator, not standalone "
-            "proof of crop loss. Differences in crop stage, weather, "
-            "and observation conditions must be considered."
+            "Current NDVI is compared with the average of available "
+            "matching calendar periods from previous years. Differences "
+            "in crop stage, weather, and observation conditions matter. "
+            "NDVI change alone does not prove crop loss."
+            if comparison_success
+            else
+            "A comparison could not be calculated because current or "
+            "historical NDVI data was unavailable."
         ),
     }
