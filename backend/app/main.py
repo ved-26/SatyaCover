@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Literal
+from typing import Any,Literal
 from app.earth_engine import (
     initialize_earth_engine,
     get_ndvi_summary,
@@ -25,21 +25,72 @@ app.add_middleware(
 )
 
 
+
 class AssessmentRequest(BaseModel):
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
-    crop: Literal["rice", "wheat", "cotton", "soybean", "sugarcane", "other"] = "other"
+    crop: Literal[
+        "rice", "wheat", "cotton", "soybean", "sugarcane", "other"
+    ] = "other"
     start_date: date
     end_date: date
+    field_boundary: dict[str, Any] | None = None
 
     @model_validator(mode="after")
-    def validate_dates(self):
+    def validate_dates_and_boundary(self):
         if self.start_date > self.end_date:
             raise ValueError("start_date must be on or before end_date")
+
         if (self.end_date - self.start_date).days > 400:
             raise ValueError("Choose a period of 400 days or less for the MVP")
-        return self
 
+        if self.field_boundary is not None:
+            if self.field_boundary.get("type") != "Polygon":
+                raise ValueError(
+                    "field_boundary must be a GeoJSON Polygon"
+                )
+
+            coordinates = self.field_boundary.get("coordinates")
+
+            if not isinstance(coordinates, list) or len(coordinates) != 1:
+                raise ValueError(
+                    "Provide one polygon ring in field_boundary.coordinates"
+                )
+
+            ring = coordinates[0]
+
+            if not isinstance(ring, list) or len(ring) < 4:
+                raise ValueError(
+                    "A polygon ring must contain at least four coordinates"
+                )
+
+            for point in ring:
+                if (
+                    not isinstance(point, (list, tuple))
+                    or len(point) != 2
+                ):
+                    raise ValueError(
+                        "Each polygon coordinate must be [longitude, latitude]"
+                    )
+
+                longitude, latitude = point
+
+                if not (
+                    isinstance(longitude, (int, float))
+                    and isinstance(latitude, (int, float))
+                    and -180 <= longitude <= 180
+                    and -90 <= latitude <= 90
+                ):
+                    raise ValueError(
+                        "Polygon coordinates are outside valid geographic ranges"
+                    )
+
+            if ring[0] != ring[-1]:
+                raise ValueError(
+                    "The polygon ring must be closed"
+                )
+
+        return self
 
 @app.get("/")
 def root():

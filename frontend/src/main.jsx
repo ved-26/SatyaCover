@@ -9,6 +9,9 @@ import {
 } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import "./styles.css";
+import L from "leaflet";
+import "leaflet-draw";
+import "leaflet-draw/dist/leaflet.draw.css";
 
 const API = "http://127.0.0.1:8000";
 
@@ -35,6 +38,70 @@ function MapUpdater({ position }) {
   return null;
 }
 
+
+function FieldBoundaryDrawer({ onBoundaryChange }) {
+  const map = useMap();
+
+  React.useEffect(() => {
+    const drawnItems = new L.FeatureGroup();
+    map.addLayer(drawnItems);
+
+    const drawControl = new L.Control.Draw({
+      draw: {
+        polygon: {
+          allowIntersection: false,
+          showArea: true,
+        },
+        rectangle: false,
+        polyline: false,
+        circle: false,
+        circlemarker: false,
+        marker: false,
+      },
+      edit: {
+      featureGroup: drawnItems,
+      edit: {},
+      remove: true,
+    },
+    });
+
+    map.addControl(drawControl);
+
+    function updateBoundary() {
+      const layers = drawnItems.getLayers();
+
+      if (layers.length === 0) {
+        onBoundaryChange(null);
+        return;
+      }
+
+      const geoJson = layers[0].toGeoJSON();
+      onBoundaryChange(geoJson.geometry);
+    }
+
+    function handleCreated(event) {
+      drawnItems.clearLayers();
+      drawnItems.addLayer(event.layer);
+      updateBoundary();
+    }
+
+    map.on(L.Draw.Event.CREATED, handleCreated);
+    map.on(L.Draw.Event.EDITED, updateBoundary);
+    map.on(L.Draw.Event.DELETED, updateBoundary);
+
+    return () => {
+      map.off(L.Draw.Event.CREATED, handleCreated);
+      map.off(L.Draw.Event.EDITED, updateBoundary);
+      map.off(L.Draw.Event.DELETED, updateBoundary);
+      map.removeControl(drawControl);
+      map.removeLayer(drawnItems);
+    };
+  }, [map, onBoundaryChange]);
+
+  return null;
+}
+
+
 function App() {
   const [form, setForm] = useState({
     latitude: "18.5204",
@@ -43,6 +110,8 @@ function App() {
     start_date: "2026-06-01",
     end_date: "2026-09-30",
   });
+
+  const [fieldBoundary, setFieldBoundary] = useState(null);
 
   const position = [
     Number(form.latitude) || 0,
@@ -95,6 +164,15 @@ if (dateError) {
   setError(dateError);
   return;
 }
+
+if (!fieldBoundary) {
+  setResult(null);
+  setError(
+    "Please draw and save the farm boundary on the map before running the assessment."
+  );
+  return;
+}
+
     setLoading(true);
     setError("");
     setResult(null);
@@ -108,10 +186,11 @@ if (dateError) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          ...form,
-          latitude: Number(form.latitude),
-          longitude: Number(form.longitude),
-        }),
+  ...form,
+  latitude: Number(form.latitude),
+  longitude: Number(form.longitude),
+  field_boundary: fieldBoundary,
+}),
       });
 
       const body = await response.json();
@@ -248,18 +327,39 @@ if (dateError) {
                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                   />
 
-                  <MapUpdater position={position} />
+                  
+<MapUpdater position={position} />
 
-                  <MapPicker
-                    position={position}
-                    onLocationSelect={(coords) =>
-                      setForm((previous) => ({
-                        ...previous,
-                        ...coords,
-                      }))
-                    }
-                  />
+<MapPicker
+  position={position}
+  onLocationSelect={(coords) =>
+    setForm((previous) => ({
+      ...previous,
+      ...coords,
+    }))
+  }
+/>
+
+<FieldBoundaryDrawer
+  onBoundaryChange={setFieldBoundary}
+/>
+
                 </MapContainer>
+                
+<div className="boundary-status">
+  {fieldBoundary ? (
+    <p>
+      <strong>Farm boundary selected.</strong>{" "}
+      Polygon coordinates are ready for assessment.
+    </p>
+  ) : (
+    <p>
+      No farm boundary selected. Use the polygon tool on the map
+      to outline the field you have permission to analyze.
+    </p>
+  )}
+</div>
+
               </div>
 
               <div className="two-cols">

@@ -12,13 +12,16 @@ def initialize_earth_engine():
     ee.Initialize(project=PROJECT_ID)
 
 
+
 def get_ndvi_summary(
     latitude: float,
     longitude: float,
     start_date: str,
     end_date: str,
     buffer_meters: int = 100,
+    field_boundary: dict | None = None,
 ):
+
     """
     Calculate mean NDVI for a small area around a farm location.
 
@@ -43,8 +46,20 @@ def get_ndvi_summary(
     # Earth Engine's filterDate uses an exclusive end date.
     exclusive_end = (end + timedelta(days=1)).isoformat()
 
-    point = ee.Geometry.Point([longitude, latitude])
-    region = point.buffer(buffer_meters)
+    
+    if field_boundary is not None:
+        if field_boundary.get("type") != "Polygon":
+            raise ValueError("field_boundary must be a GeoJSON Polygon")
+
+        region = ee.Geometry.Polygon(
+            field_boundary["coordinates"]
+        )
+        geometry_type = "Polygon"
+    else:
+        point = ee.Geometry.Point([longitude, latitude])
+        region = point.buffer(buffer_meters)
+        geometry_type = "Point buffer"
+
 
     # Sentinel-2 Scene Classification Layer:
     # remove defective pixels, cloud shadows, clouds, cirrus and snow.
@@ -111,13 +126,17 @@ def get_ndvi_summary(
         "end_date": end.isoformat(),
         "latitude": latitude,
         "longitude": longitude,
-        "buffer_meters": buffer_meters,
+        "geometry_type": geometry_type,
+        "buffer_meters": (
+        buffer_meters if field_boundary is None else None
+        ),
         "image_count": image_count,
         "ndvi_mean": round(float(mean_ndvi), 4),
         "interpretation": (
             "Vegetation index only; not standalone proof of crop loss."
         ),
     }
+
 
 
 
@@ -128,7 +147,9 @@ def compare_with_historical_baseline(
     end_date: str,
     buffer_meters: int = 100,
     baseline_years: int = 3,
+    field_boundary: dict | None = None,
 ):
+
     """
     Compare current-period NDVI with the average of matching
     calendar periods from previous years with usable observations.
@@ -145,11 +166,12 @@ def compare_with_historical_baseline(
         raise ValueError("End date must be on or after start date.")
 
     current = get_ndvi_summary(
-        latitude,
-        longitude,
-        start_date,
-        end_date,
-        buffer_meters,
+    latitude,
+    longitude,
+    start_date,
+    end_date,
+    buffer_meters,
+    field_boundary,
     )
 
     historical_periods = []
@@ -182,11 +204,12 @@ def compare_with_historical_baseline(
             )
 
         historical = get_ndvi_summary(
-            latitude,
-            longitude,
-            historical_start.isoformat(),
-            historical_end.isoformat(),
-            buffer_meters,
+        latitude,
+        longitude,
+        historical_start.isoformat(),
+        historical_end.isoformat(),
+        buffer_meters,
+        field_boundary,
         )
 
         historical_periods.append({
