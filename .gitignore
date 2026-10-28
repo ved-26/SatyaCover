@@ -17,3 +17,9 @@ Thumbs.db
 # Local databases and generated outputs
 *.db
 *.sqlite3
+# Local datasets and generated ML artifacts
+data/raw/
+data/processed/
+models/*.joblib
+models/*.pkl
+*.parquet

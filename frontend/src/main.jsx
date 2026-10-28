@@ -389,19 +389,22 @@ if (!fieldBoundary) {
               </div>
 
               
+
 <div className="coordinate-note">
-  <strong>Field boundary not verified</strong>
+  <strong>Field boundary verification</strong>
   <p>
-    The map currently selects a point, not the outline of the
-    farm. Satellite analysis uses a 100-metre buffer around that
-    point, which may include roads, nearby fields, buildings,
-    or other land.
+    Draw and save the actual farm boundary before running
+    an assessment. The selected polygon is used for satellite
+    analysis instead of a 100-metre point buffer.
   </p>
   <p>
-    For a field-specific assessment, provide the actual field
-    boundary and ensure the satellite analysis uses that geometry.
+    Ensure the boundary accurately represents the field you
+    have permission to analyze. Satellite and weather evidence
+    still requires validation before drawing conclusions about
+    crop loss.
   </p>
 </div>
+
 
 
 <div className="evidence-note">

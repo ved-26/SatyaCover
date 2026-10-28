@@ -178,6 +178,7 @@ def assess(request: AssessmentRequest):
             longitude=request.longitude,
             start_date=request.start_date.isoformat(),
             end_date=request.end_date.isoformat(),
+            field_boundary=request.field_boundary,
         )
     except Exception:
         satellite = {
@@ -200,6 +201,7 @@ def assess(request: AssessmentRequest):
             longitude=request.longitude,
             start_date=request.start_date.isoformat(),
             end_date=request.end_date.isoformat(),
+            field_boundary=request.field_boundary,
         )
     except Exception:
         historical_comparison = {
