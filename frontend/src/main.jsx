@@ -1,3 +1,4 @@
+import { jsPDF } from "jspdf";
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -104,12 +105,18 @@ function FieldBoundaryDrawer({ onBoundaryChange }) {
 
 function App() {
   const [form, setForm] = useState({
-    latitude: "18.5204",
-    longitude: "73.8567",
-    crop: "soybean",
-    start_date: "2026-06-01",
-    end_date: "2026-09-30",
-  });
+  latitude: "18.5204",
+  longitude: "73.8567",
+  crop: "soybean",
+  start_date: "2026-06-01",
+  end_date: "2026-09-30",
+
+  state_name: "Maharashtra",
+  district_name: "Pune",
+  crop_name: "Soybean",
+  season: "Kharif",
+  benchmark_year: 2022,
+});
 
   const [fieldBoundary, setFieldBoundary] = useState(null);
 
@@ -186,11 +193,12 @@ if (!fieldBoundary) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-  ...form,
-  latitude: Number(form.latitude),
-  longitude: Number(form.longitude),
-  field_boundary: fieldBoundary,
-}),
+        ...form,
+        latitude: Number(form.latitude),
+        longitude: Number(form.longitude),
+        benchmark_year: Number(form.benchmark_year),
+        field_boundary: fieldBoundary,
+        }), 
       });
 
       const body = await response.json();
@@ -212,11 +220,518 @@ if (!fieldBoundary) {
     }
   }
 
+function downloadFarmerReport() {
+  if (!result) return;
+
+  const pdf = new jsPDF("p", "mm", "a4");
+
+  const W = 210;
+  const H = 297;
+  const M = 17;
+  const CW = W - M * 2;
+  const field = result.field || {};
+  const weather = result.weather_summary || {};
+  const satellite = result.satellite_evidence || {};
+  const history = result.historical_comparison || {};
+  const yieldData = result.historical_yield_benchmark || {};
+  const assessment = result.assessment || {};
+
+  let y = 20;
+
+  const crop = String(field.crop || "Farm");
+  const reportDate = new Date().toLocaleDateString("en-IN");
+  const reportId =
+    "SC-" + Date.now().toString().slice(-8);
+
+  function text(value, x, yy, size = 10, style = "normal", color = [45, 55, 50]) {
+    pdf.setFont("helvetica", style);
+    pdf.setFontSize(size);
+    pdf.setTextColor(...color);
+    pdf.text(String(value ?? "Not available"), x, yy);
+  }
+
+  function paragraph(value, options = {}) {
+    const size = options.size || 9.5;
+    const lineHeight = options.lineHeight || 5;
+    const indent = options.indent || 0;
+
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(size);
+
+    const lines = pdf.splitTextToSize(
+      String(value ?? "Not available"),
+      CW - indent
+    );
+
+    if (y + lines.length * lineHeight + 5 > 275) {
+      pdf.addPage();
+      y = 22;
+    }
+
+    pdf.text(lines, M + indent, y);
+    y += lines.length * lineHeight + 5;
+  }
+
+  function heading(number, title) {
+    if (y + 17 > 270) {
+      pdf.addPage();
+      y = 22;
+    }
+
+    y += 4;
+
+    pdf.setFillColor(226, 241, 231);
+    pdf.roundedRect(M, y - 6, 8, 8, 2, 2, "F");
+
+    text(number, M + 2.1, y, 8, "bold", [24, 105, 68]);
+    text(title, M + 12, y, 12, "bold", [28, 65, 46]);
+
+    y += 9;
+  }
+
+  function labelValue(label, value) {
+    const val = String(value ?? "Not available");
+
+    if (y + 12 > 275) {
+      pdf.addPage();
+      y = 22;
+    }
+
+    text(label, M, y, 8, "normal", [110, 120, 113]);
+    text(val, M, y + 5, 10, "bold", [35, 48, 40]);
+    y += 12;
+  }
+
+  function metricCard(x, yy, width, label, value, note) {
+    pdf.setFillColor(242, 248, 243);
+    pdf.roundedRect(x, yy, width, 27, 3, 3, "F");
+
+    text(label, x + 4, yy + 7, 8, "normal", [90, 110, 95]);
+    text(value, x + 4, yy + 16, 13, "bold", [25, 105, 65]);
+    text(note, x + 4, yy + 22, 7, "normal", [105, 115, 108]);
+  }
+
+  function drawNDVIChart() {
+    const periods = [];
+
+    (history.historical_periods || []).forEach((p) => {
+      if (p.ndvi_mean != null) {
+        periods.push({
+          year: String(p.year),
+          value: Number(p.ndvi_mean),
+        });
+      }
+    });
+
+    const current = history.current_period?.ndvi_mean;
+
+    if (current != null) {
+      periods.push({
+        year: String(
+          history.current_period.start_date?.slice(0, 4) ||
+          "Current"
+        ),
+        value: Number(current),
+      });
+    }
+
+    if (!periods.length) {
+      paragraph("No historical NDVI chart is available.");
+      return;
+    }
+
+    if (y + 65 > 275) {
+      pdf.addPage();
+      y = 22;
+    }
+
+    const chartY = y;
+    const chartH = 40;
+    const chartW = CW;
+    const maxValue = Math.max(
+      1,
+      ...periods.map((p) => p.value)
+    );
+
+    pdf.setFillColor(247, 249, 247);
+    pdf.roundedRect(M, chartY, chartW, 55, 3, 3, "F");
+
+    const gap = chartW / periods.length;
+    const barWidth = Math.min(17, gap * 0.48);
+
+    periods.forEach((p, i) => {
+      const barHeight = Math.max(
+        1,
+        (p.value / maxValue) * chartH
+      );
+
+      const x = M + gap * i + (gap - barWidth) / 2;
+      const barY = chartY + 42 - barHeight;
+
+      pdf.setFillColor(45, 145, 91);
+      pdf.roundedRect(
+        x,
+        barY,
+        barWidth,
+        barHeight,
+        1.5,
+        1.5,
+        "F"
+      );
+
+      text(
+        p.value.toFixed(3),
+        x - 2,
+        barY - 3,
+        7,
+        "bold",
+        [35, 75, 48]
+      );
+
+      text(
+        p.year,
+        x - 2,
+        chartY + 49,
+        7,
+        "normal",
+        [75, 85, 78]
+      );
+    });
+
+    y += 62;
+  }
+
+  // PAGE 1: COVER
+  pdf.setFillColor(20, 83, 53);
+  pdf.rect(0, 0, W, 100, "F");
+
+  text("SATYACOVER", M, 24, 12, "bold", [255, 255, 255]);
+
+  text(
+    "FARM EVIDENCE",
+    M,
+    47,
+    23,
+    "bold",
+    [255, 255, 255]
+  );
+
+  text(
+    "REPORT",
+    M,
+    59,
+    23,
+    "bold",
+    [255, 255, 255]
+  );
+
+  text(
+    "Understanding your farm through satellite and weather data",
+    M,
+    72,
+    9,
+    "normal",
+    [225, 242, 229]
+  );
+
+  y = 117;
+
+  heading("01", "Your farm at a glance");
+
+  labelValue("Crop", crop);
+  labelValue(
+    "Observation period",
+    `${field.start_date || "N/A"} to ${field.end_date || "N/A"}`
+  );
+
+  labelValue(
+    "Farm location",
+    `${field.latitude ?? "N/A"}, ${field.longitude ?? "N/A"}`
+  );
+
+  labelValue(
+    "Farm boundary",
+    satellite.geometry_type === "Polygon"
+      ? "Farm polygon analysed"
+      : "Boundary not confirmed"
+  );
+
+  y += 3;
+
+  const rainfall =
+    weather.total_precipitation_mm != null
+      ? `${Number(weather.total_precipitation_mm).toFixed(1)} mm`
+      : "N/A";
+
+  const ndvi =
+    satellite.ndvi_mean != null
+      ? Number(satellite.ndvi_mean).toFixed(4)
+      : "N/A";
+
+  metricCard(
+    M,
+    y,
+    CW / 2 - 2,
+    "TOTAL RAINFALL",
+    rainfall,
+    "During selected period"
+  );
+
+  metricCard(
+    M + CW / 2 + 2,
+    y,
+    CW / 2 - 2,
+    "VEGETATION READING",
+    ndvi,
+    "Satellite NDVI"
+  );
+
+  y += 38;
+
+  pdf.setFillColor(255, 247, 225);
+  pdf.roundedRect(M, y, CW, 29, 3, 3, "F");
+
+  text(
+    "IMPORTANT: THIS IS AN EVIDENCE REPORT",
+    M + 5,
+    y + 8,
+    9,
+    "bold",
+    [130, 85, 20]
+  );
+
+  pdf.setFont("helvetica", "normal");
+  pdf.setFontSize(8);
+  pdf.setTextColor(105, 85, 55);
+
+  pdf.text(
+    pdf.splitTextToSize(
+      "This report shares observations from satellite images, rainfall records and historical data. It does not confirm crop damage or insurance eligibility.",
+      CW - 10
+    ),
+    M + 5,
+    y + 15
+  );
+
+  text(
+    `Report ID: ${reportId}`,
+    M,
+    270,
+    8,
+    "normal",
+    [100, 110, 103]
+  );
+
+  text(
+    `Generated: ${reportDate}`,
+    M,
+    277,
+    8,
+    "normal",
+    [100, 110, 103]
+  );
+
+  // PAGE 2: WEATHER AND SATELLITE
+  pdf.addPage();
+  y = 22;
+
+  heading("02", "Rainfall information");
+
+  labelValue("Total rainfall", rainfall);
+  labelValue("Weather records", weather.days_returned);
+  labelValue("Data source", weather.source);
+
+  paragraph(
+    "What does this mean? This is the rainfall recorded during the selected dates. Rain can help crops grow, but too much or too little rain may affect them. The total rainfall alone cannot tell us whether your field was damaged."
+  );
+
+  heading("03", "What the satellite observed");
+
+  labelValue("Vegetation reading (NDVI)", ndvi);
+  labelValue("Satellite images", satellite.image_count);
+  labelValue("Satellite data status", satellite.status);
+
+  paragraph(
+    "What is NDVI? Satellites use light reflected by plants to calculate this reading. It helps us understand how green the vegetation appears. It is not a direct measurement of crop production or crop loss."
+  );
+
+  heading("04", "Comparison with previous years");
+
+  // Keep the complete historical comparison on one page.
+if (y + 145 > 275) {
+  pdf.addPage();
+  y = 22;
+}
+
+  if (history.status === "SUCCESS") {
+    labelValue(
+      "Current vegetation reading",
+      history.current_period?.ndvi_mean != null
+        ? Number(history.current_period.ndvi_mean).toFixed(4)
+        : "N/A"
+    );
+
+    labelValue(
+      "Previous years' average",
+      history.historical_average_ndvi != null
+        ? Number(history.historical_average_ndvi).toFixed(4)
+        : "N/A"
+    );
+
+    labelValue(
+      "Difference from average",
+      history.ndvi_change != null
+        ? `${Number(history.ndvi_change) > 0 ? "+" : ""}${Number(history.ndvi_change).toFixed(4)}`
+        : "N/A"
+    );
+
+    // Keep the NDVI chart and its explanation together.
+if (y + 100 > 275) {
+  pdf.addPage();
+  y = 22;
+}
+    text("Vegetation reading by year", M, y, 9, "bold");
+    y += 6;
+
+    drawNDVIChart();
+
+    const change = Number(history.ndvi_change);
+
+    paragraph(
+      change < 0
+        ? "The current vegetation reading is lower than the available previous-years average for the same calendar period."
+        : change > 0
+          ? "The current vegetation reading is higher than the available previous-years average for the same calendar period."
+          : "The current vegetation reading is equal to the available previous-years average."
+    );
+
+    paragraph(
+      "Changes between years can happen because of planting dates, crop growth stage, rainfall and satellite observation conditions. A lower reading does not by itself prove crop loss."
+    );
+  } else {
+    paragraph(
+      "A comparison with previous years could not be completed because sufficient historical satellite observations were unavailable."
+    );
+  }
+
+  // PAGE 3: AI AND RECOMMENDATIONS
+  pdf.addPage();
+  y = 22;
+
+  heading("05", "AI historical yield information");
+
+  if (yieldData.status === "SUCCESS") {
+    metricCard(
+      M,
+      y,
+      CW,
+      "HISTORICAL YIELD BENCHMARK",
+      `${Number(yieldData.predicted_yield).toFixed(4)} tonnes/ha`,
+      "AI model: XGBoost"
+    );
+
+    y += 34;
+
+    paragraph(
+      "What does this number mean? The AI model estimates a historical yield benchmark using crop and district information. It is not the actual production or measured yield of your individual farm."
+    );
+  } else {
+    paragraph(
+      "The AI historical yield benchmark could not be generated for this assessment."
+    );
+  }
+
+  heading("06", "What should you understand?");
+
+  paragraph(
+    "SatyaCover has collected rainfall information and satellite observations for your selected farm and dates. It has also compared vegetation readings with previous years and, where available, generated a historical yield benchmark."
+  );
+
+  paragraph(
+    "These observations can help you investigate your field. However, they do not yet establish whether your farm suffered crop loss or how much production was lost."
+  );
+
+  heading("07", "What can you do next?");
+
+  paragraph(
+    "1. Visit your field and check the condition of your crops."
+  );
+
+  paragraph(
+    "2. Take clear photographs of any visible crop damage."
+  );
+
+  paragraph(
+    "3. Keep records of your sowing date, crop type and farming activities."
+  );
+
+  paragraph(
+    "4. Discuss the observations with your local agricultural officer or relevant insurance authority."
+  );
+
+  heading("08", "Important notice");
+
+  pdf.setFillColor(255, 247, 225);
+  pdf.roundedRect(M, y - 4, CW, 16, 3, 3, "F");
+
+  text(
+    assessment.status || "LOSS ASSESSMENT PENDING",
+    M + 4,
+    y + 5,
+    9,
+    "bold",
+    [135, 85, 20]
+  );
+
+  y += 19;
+
+  paragraph(
+    "This report is generated by the SatyaCover hackathon prototype for informational purposes. It is not an official crop-loss certificate, insurance approval, claim decision or payout guarantee. Satellite readings, rainfall and historical yield estimates require further verification."
+  );
+
+  // FOOTERS AND PAGE NUMBERS
+  const totalPages = pdf.getNumberOfPages();
+
+  for (let page = 1; page <= totalPages; page++) {
+    pdf.setPage(page);
+
+    pdf.setDrawColor(220, 228, 221);
+    pdf.line(M, 284, W - M, 284);
+
+    text(
+      "SatyaCover | Farm Evidence Report",
+      M,
+      290,
+      8,
+      "normal",
+      [100, 110, 103]
+    );
+
+    const pageText = `Page ${page} of ${totalPages}`;
+
+    pdf.setFontSize(8);
+    pdf.setFont("helvetica", "normal");
+
+    pdf.text(
+      pageText,
+      W - M,
+      290,
+      { align: "right" }
+    );
+  }
+
+  const safeCrop = crop.replace(/[^a-z0-9]/gi, "_");
+
+  pdf.save(
+    `SatyaCover_${safeCrop}_Farmer_Report.pdf`
+  );
+}
+
+
   return (
     <div className="app-shell">
       <header className="topbar">
-        async function runAssessment(event)<div className="brand-mark">SC</div>
-
+        <div className="brand-mark">SC</div>
         <div>
           <div className="brand-name">SatyaCover</div>
           <div className="brand-caption">
@@ -473,6 +988,14 @@ if (!fieldBoundary) {
                   </div>
                 </div>
 
+                <button
+  type="button"
+  onClick={downloadFarmerReport}
+  className="download-report-btn"
+>
+  Download Farmer Report (PDF)
+</button>
+
                 
 <div className="metric-grid">
   <div className="metric">
@@ -674,6 +1197,36 @@ result.historical_comparison.status !== "SUCCESS" ? (
 
                 
 <h3>What this means</h3>
+
+<h3>AI Crop Yield Benchmark · XGBoost</h3>
+
+{result.historical_yield_benchmark?.status === "SUCCESS" ? (
+  <div className="metric-grid">
+    <div className="metric">
+      <small>Predicted historical yield</small>
+      <strong>
+        {Number(
+          result.historical_yield_benchmark.predicted_yield
+        ).toFixed(4)} tonnes/ha
+      </strong>
+    </div>
+
+    <div className="metric">
+      <small>Model</small>
+      <strong>XGBoost</strong>
+    </div>
+  </div>
+) : (
+  <p className="muted">
+    Yield benchmark unavailable. Check the crop, district,
+    season and benchmark year.
+  </p>
+)}
+
+<p className="muted">
+  This is a historical district/crop yield benchmark,
+  not a farm-level yield or crop-loss prediction.
+</p>
 
 {result.historical_comparison?.status === "SUCCESS" ? (
   <div className="evidence-note">

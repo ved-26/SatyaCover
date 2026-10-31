@@ -28,13 +28,12 @@ TRAIN_FILE = DATA_DIR / "idp_yield_train.csv"
 VALIDATION_FILE = DATA_DIR / "idp_yield_validation.csv"
 TEST_FILE = DATA_DIR / "idp_yield_test.csv"
 
-MODEL_PATH = MODEL_DIR / "crop_yield_xgboost_gpu.joblib"
-METRICS_PATH = MODEL_DIR / "crop_yield_xgboost_metrics.csv"
+MODEL_PATH = MODEL_DIR / "crop_yield_xgboost_no_area_candidate.joblib"
+METRICS_PATH = MODEL_DIR / "crop_yield_xgboost_no_area_candidate_metrics.csv"
 
 TARGET = "yield_tonnes_per_hectare"
 
-NUMERIC_FEATURES = ["year_start", "area"]
-
+NUMERIC_FEATURES = ["year_start"]
 CATEGORICAL_FEATURES = [
     "state_name",
     "district_name",
@@ -215,7 +214,7 @@ def main():
         eval_metric="rmse",
         tree_method="hist",
         device="cuda",
-        n_estimators=700,
+        n_estimators=3500,
         learning_rate=0.05,
         max_depth=7,
         min_child_weight=5,
@@ -223,7 +222,7 @@ def main():
         colsample_bytree=0.8,
         reg_alpha=0.1,
         reg_lambda=1.0,
-        early_stopping_rounds=30,
+        early_stopping_rounds=50,
         n_jobs=4,
         random_state=42,
     )

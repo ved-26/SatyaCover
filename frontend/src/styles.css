@@ -150,3 +150,20 @@ footer { text-align: center; padding: 20px; border-top: 1px solid #e2eae1; color
 .evidence-note p {
   margin: 6px 0;
 }
+
+.download-report-btn {
+  width: 100%;
+  margin: 18px 0;
+  padding: 14px 18px;
+  background: #176b45;
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.download-report-btn:hover {
+  background: #105638;
+}
