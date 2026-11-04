@@ -4,6 +4,32 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.*
+!.env.example
+!**/.env.example
+
+# Local credentials and private keys
+**/credentials.json
+**/*credential*.json
+**/*service-account*.json
+**/*service_account*.json
+**/*private-key*.json
+**/*private_key*.json
+**/*token*.json
+!**/*credential*.example.json
+!**/*service-account*.example.json
+!**/*service_account*.example.json
+!**/*private-key*.example.json
+!**/*private_key*.example.json
+!**/*token*.example.json
+*.pem
+*.key
+*.p12
+*.pfx
+!**/*.example.pem
+!**/*.example.key
+!**/*.example.p12
+!**/*.example.pfx
 
 # Node
 node_modules/
@@ -17,6 +43,17 @@ Thumbs.db
 # Local databases and generated outputs
 *.db
 *.sqlite3
+SatyaCover_*_Farmer_Report.pdf
+*_Farmer_Report.pdf
+/tmp/
+/test-results/
+/playwright-report/
+/coverage/
+/backend/test-results/
+/frontend/test-results/
+*.test-output.png
+*.test-output.jpg
+
 # Local datasets and generated ML artifacts
 data/raw/
 data/processed/

@@ -1,15 +1,21 @@
 from pathlib import Path
+import os
+import re
+import tempfile
 import joblib
 import pandas as pd
 from datetime import date
+from time import time
 from typing import Any,Literal
+from uuid import uuid4
 from app.earth_engine import (
     initialize_earth_engine,
     get_ndvi_summary,
+    get_satellite_visualizations,
     compare_with_historical_baseline,
 )
 import requests
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
 
@@ -18,6 +24,88 @@ app = FastAPI(
     description="Prototype API for explainable crop-loss assessment. Demo outputs are not insurance decisions.",
     version="0.1.0",
 )
+
+_SATELLITE_IMAGE_CACHE_DIR = Path(tempfile.gettempdir()) / "satyacover-satellite-images"
+_SATELLITE_IMAGE_CACHE_TTL_SECONDS = 30 * 60
+_SATELLITE_IMAGE_CACHE_MAX_ENTRIES = 8
+_SATELLITE_IMAGE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_SATELLITE_IMAGE_SUFFIXES = {"true-colour": "rgb", "ndvi": "ndvi"}
+
+
+def _image_cache_path(image_id, image_kind):
+    suffix = _SATELLITE_IMAGE_SUFFIXES.get(image_kind)
+    if suffix is None or not _SATELLITE_IMAGE_ID_PATTERN.fullmatch(image_id):
+        return None
+    return _SATELLITE_IMAGE_CACHE_DIR / f"{image_id}-{suffix}.png"
+
+
+def _prune_satellite_image_cache():
+    _SATELLITE_IMAGE_CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name != "nt":
+        os.chmod(_SATELLITE_IMAGE_CACHE_DIR, 0o700)
+    now = time()
+    for path in _SATELLITE_IMAGE_CACHE_DIR.glob("*.png.tmp"):
+        if now - path.stat().st_mtime > _SATELLITE_IMAGE_CACHE_TTL_SECONDS:
+            path.unlink(missing_ok=True)
+    groups = {}
+    for path in _SATELLITE_IMAGE_CACHE_DIR.glob("*.png"):
+        image_id = path.name.split("-", 1)[0]
+        if not _SATELLITE_IMAGE_ID_PATTERN.fullmatch(image_id):
+            path.unlink(missing_ok=True)
+            continue
+        groups.setdefault(image_id, []).append(path)
+
+    for image_id, paths in list(groups.items()):
+        newest = max(path.stat().st_mtime for path in paths)
+        if now - newest > _SATELLITE_IMAGE_CACHE_TTL_SECONDS:
+            for path in paths:
+                path.unlink(missing_ok=True)
+            groups.pop(image_id, None)
+
+    ordered = sorted(
+        groups.items(),
+        key=lambda item: max(path.stat().st_mtime for path in item[1]),
+        reverse=True,
+    )
+    for _, paths in ordered[_SATELLITE_IMAGE_CACHE_MAX_ENTRIES:]:
+        for path in paths:
+            path.unlink(missing_ok=True)
+
+
+def _store_satellite_images(visualizations):
+    _prune_satellite_image_cache()
+    image_id = uuid4().hex
+    outputs = {
+        _image_cache_path(image_id, "true-colour"): visualizations["true_colour_png"],
+        _image_cache_path(image_id, "ndvi"): visualizations["ndvi_png"],
+    }
+    try:
+        for path, content in outputs.items():
+            temporary_path = path.with_suffix(".png.tmp")
+            temporary_path.write_bytes(content)
+            os.replace(temporary_path, path)
+    except Exception:
+        for path in outputs:
+            path.unlink(missing_ok=True)
+            path.with_suffix(".png.tmp").unlink(missing_ok=True)
+        raise
+    _prune_satellite_image_cache()
+    return image_id
+
+
+def _get_cached_satellite_image(image_id, image_kind):
+    path = _image_cache_path(image_id, image_kind)
+    if path is None:
+        return None
+    try:
+        if time() - path.stat().st_mtime > _SATELLITE_IMAGE_CACHE_TTL_SECONDS:
+            for kind in _SATELLITE_IMAGE_SUFFIXES:
+                stale_path = _image_cache_path(image_id, kind)
+                stale_path.unlink(missing_ok=True)
+            return None
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
 
 # --------------------------------------------------
 # CROP YIELD ML MODEL
@@ -138,6 +226,30 @@ class AssessmentRequest(BaseModel):
                     "The polygon ring must be closed"
                 )
 
+            vertices = ring[:-1]
+            if len({(float(point[0]), float(point[1])) for point in vertices}) < 3:
+                raise ValueError(
+                    "The polygon must have at least three distinct vertices"
+                )
+
+            if any(
+                vertices[index] == vertices[(index + 1) % len(vertices)]
+                for index in range(len(vertices))
+            ):
+                raise ValueError(
+                    "The polygon cannot contain consecutive duplicate vertices"
+                )
+
+            ring_area = abs(sum(
+                vertices[index][0] * vertices[(index + 1) % len(vertices)][1]
+                - vertices[(index + 1) % len(vertices)][0] * vertices[index][1]
+                for index in range(len(vertices))
+            )) / 2
+            if ring_area <= 1e-12:
+                raise ValueError(
+                    "The polygon must enclose a non-zero area"
+                )
+
         return self
 
 class YieldPredictionRequest(BaseModel):
@@ -155,6 +267,28 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/satellite/images/{image_id}/{image_kind}")
+def get_satellite_image(image_id: str, image_kind: str):
+    if image_kind not in {"true-colour", "ndvi"}:
+        raise HTTPException(status_code=404, detail="Satellite image not found")
+
+    image_bytes = _get_cached_satellite_image(image_id, image_kind)
+    if image_bytes is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Satellite image is unavailable or has expired. Run the assessment again.",
+        )
+
+    return Response(
+        content=image_bytes,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "private, max-age=600",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 # --------------------------------------------------
 # CROP YIELD PREDICTION API
@@ -320,6 +454,63 @@ def assess(request: AssessmentRequest):
         and satellite.get("ndvi_mean") is not None
     )
 
+    satellite_visualizations = {
+        "status": "UNAVAILABLE",
+        "message": "Satellite visualizations could not be generated.",
+        "source": "COPERNICUS/S2_SR_HARMONIZED",
+        "start_date": request.start_date.isoformat(),
+        "end_date": request.end_date.isoformat(),
+        "image_count": satellite.get("image_count"),
+    }
+
+    if request.field_boundary is None:
+        satellite_visualizations["message"] = (
+            "Draw and submit the farm polygon to generate field-clipped imagery."
+        )
+    else:
+        try:
+            initialize_earth_engine()
+            generated = get_satellite_visualizations(
+                latitude=request.latitude,
+                longitude=request.longitude,
+                start_date=request.start_date.isoformat(),
+                end_date=request.end_date.isoformat(),
+                field_boundary=request.field_boundary,
+            )
+            if generated.get("status") == "SUCCESS":
+                image_id = _store_satellite_images(generated)
+                satellite_visualizations = {
+                    "status": "SUCCESS",
+                    "source": generated["source"],
+                    "start_date": generated["start_date"],
+                    "end_date": generated["end_date"],
+                    "image_count": generated["image_count"],
+                    "geometry_type": generated["geometry_type"],
+                    "thumbnail_dimension": generated["thumbnail_dimension"],
+                    "true_colour_url": (
+                        f"/api/satellite/images/{image_id}/true-colour"
+                    ),
+                    "ndvi_url": f"/api/satellite/images/{image_id}/ndvi",
+                    "ndvi_legend": generated["ndvi_legend"],
+                }
+            else:
+                satellite_visualizations = {
+                    key: value for key, value in generated.items()
+                    if key not in {"true_colour_png", "ndvi_png"}
+                }
+        except Exception:
+            satellite_visualizations = {
+                "status": "UNAVAILABLE",
+                "message": (
+                    "Satellite images are unavailable. Check Earth Engine access "
+                    "and try running the assessment again."
+                ),
+                "source": "COPERNICUS/S2_SR_HARMONIZED",
+                "start_date": request.start_date.isoformat(),
+                "end_date": request.end_date.isoformat(),
+                "image_count": satellite.get("image_count"),
+            }
+
     # --------------------------------------------------
     # 3. HISTORICAL NDVI COMPARISON
     # --------------------------------------------------
@@ -447,6 +638,8 @@ def assess(request: AssessmentRequest):
         },
 
         "satellite_evidence": satellite,
+
+        "satellite_visualizations": satellite_visualizations,
 
         "historical_comparison": historical_comparison,
 
