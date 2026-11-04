@@ -534,6 +534,34 @@ def assess(request: AssessmentRequest):
             ),
         }
 
+    # Keep one authoritative current-period NDVI: the primary assessment
+    # observation also displayed in the satellite evidence card.
+    authoritative_ndvi = satellite.get("ndvi_mean")
+    current_period = historical_comparison.get("current_period")
+    if isinstance(current_period, dict):
+        current_period["ndvi_mean"] = authoritative_ndvi
+        for key in ("status", "image_count", "start_date", "end_date", "source", "geometry_type"):
+            if key in satellite:
+                current_period[key] = satellite[key]
+    historical_average_ndvi = historical_comparison.get("historical_average_ndvi")
+    if (isinstance(authoritative_ndvi, (int, float))
+            and isinstance(historical_average_ndvi, (int, float))):
+        historical_comparison["ndvi_change"] = round(
+            authoritative_ndvi - historical_average_ndvi, 4
+        )
+        historical_comparison["status"] = "SUCCESS"
+    else:
+        historical_comparison["ndvi_change"] = None
+        historical_comparison["status"] = (
+            "SUCCESS" if isinstance(historical_average_ndvi, (int, float))
+            else "INSUFFICIENT_DATA"
+        )
+        if not isinstance(authoritative_ndvi, (int, float)):
+            historical_comparison["message"] = (
+                "Current NDVI is unavailable; available historical periods "
+                "and their average are retained for reference."
+            )
+
     crop_stress_assessment = build_crop_stress_assessment(
     satellite=satellite,
     historical_comparison=historical_comparison,
@@ -629,6 +657,10 @@ def assess(request: AssessmentRequest):
             "crop": request.crop,
             "start_date": request.start_date.isoformat(),
             "end_date": request.end_date.isoformat(),
+            "geometry_type": (
+                "Polygon" if request.field_boundary is not None
+                else "Point buffer (100 m)"
+            ),
         },
 
         "weather_summary": {
@@ -846,7 +878,7 @@ def build_crop_stress_assessment(
     if (
         isinstance(current_rainfall, (int, float))
         and isinstance(rainfall_baseline, (int, float))
-        and rainfall_baseline > 1
+        and rainfall_baseline > 0
     ):
         rainfall_change_percent = round(
             (
@@ -879,6 +911,17 @@ def build_crop_stress_assessment(
             "status": "INSUFFICIENT_DATA",
             "category": "INSUFFICIENT_DATA",
             "evidence_quality": evidence_quality,
+            "indicators": {
+                "current_ndvi": current_ndvi,
+                "historical_average_ndvi": baseline_ndvi,
+                "ndvi_change_percent": ndvi_change_percent,
+                "current_rainfall_mm": current_rainfall,
+                "historical_average_rainfall_mm": rainfall_baseline,
+                "rainfall_change_percent": rainfall_change_percent,
+                "satellite_images": image_count,
+                "historical_ndvi_years": historical_years,
+                "historical_rainfall_years": rainfall_years,
+            },
             "ndvi_change_percent": ndvi_change_percent,
             "rainfall_change_percent": rainfall_change_percent,
             "interpretation": (

@@ -26,11 +26,68 @@ function formatNumber(value, digits = 2, suffix = "") {
     : "Unavailable";
 }
 
+function currentAssessmentNdvi(result) {
+  const value = result?.satellite_evidence?.ndvi_mean;
+  return isFiniteNumber(value) ? value : null;
+}
+
+function rainfallChangePercent(current, average) {
+  if (!isFiniteNumber(current) || !isFiniteNumber(average) || average <= 0) return null;
+  return ((current - average) / average) * 100;
+}
+
+function currentRainfallChange(result) {
+  const calculated = rainfallChangePercent(
+    result?.weather_summary?.total_precipitation_mm,
+    result?.historical_rainfall_comparison?.historical_average_mm,
+  );
+  if (isFiniteNumber(calculated)) return calculated;
+  const existing = result?.crop_stress_assessment?.indicators?.rainfall_change_percent
+    ?? result?.crop_stress_assessment?.rainfall_change_percent;
+  if (isFiniteNumber(existing)) return existing;
+  return null;
+}
+
+function ndviDifferenceFromBaseline(result, baseline) {
+  const current = currentAssessmentNdvi(result);
+  return isFiniteNumber(current) && isFiniteNumber(baseline) ? current - baseline : null;
+}
+
 function displayText(value, fallback = "Unavailable") {
   if (typeof value !== "string" || !value.trim()) return fallback;
   return ["undefined", "null", "nan"].includes(value.trim().toLowerCase())
     ? fallback
     : value;
+}
+
+function calculateIllustrativePayoutRange(insuredSum, minimumPercent, maximumPercent) {
+  const values = [insuredSum, minimumPercent, maximumPercent].map((value) =>
+    value === "" || value == null ? NaN : Number(value)
+  );
+  const [sum, minimum, maximum] = values;
+  if (!values.every(Number.isFinite) || sum <= 0 || minimum < 0 || maximum > 100 || minimum > maximum) return null;
+  const minimumAmount = sum * minimum / 100;
+  const maximumAmount = sum * maximum / 100;
+  if (!Number.isFinite(minimumAmount) || !Number.isFinite(maximumAmount)) return null;
+  return { minimumAmount, maximumAmount, minimumPercent: minimum, maximumPercent: maximum };
+}
+
+function screeningConcern(category, status) {
+  const normalized = String(category || "").trim().toUpperCase();
+  if (!normalized || /UNAVAILABLE|INSUFFICIENT|NOT_ASSESSED/.test(normalized) || /UNAVAILABLE|INSUFFICIENT/.test(String(status || "").toUpperCase())) return "Unavailable";
+  if (/HIGH|SEVERE|POSSIBLE_CROP_STRESS/.test(normalized)) return "HIGH";
+  if (/MODERATE|REQUIRES_FIELD_VERIFICATION/.test(normalized)) return "MODERATE";
+  if (/LOW|NO_CLEAR_STRESS_SIGNAL/.test(normalized)) return "LOW";
+  return "Unavailable";
+}
+
+function screeningIndication(category) {
+  const normalized = String(category || "").trim().toUpperCase();
+  if (normalized === "POSSIBLE_CROP_STRESS") return "Potential crop-stress signal in available evidence";
+  if (normalized === "REQUIRES_FIELD_VERIFICATION") return "Evidence requires field verification";
+  if (normalized === "NO_CLEAR_STRESS_SIGNAL") return "No clear stress signal in available evidence";
+  if (normalized === "INSUFFICIENT_DATA") return "Insufficient evidence to screen";
+  return displayText(category);
 }
 
 function MapPicker({ position, onLocationSelect }) {
@@ -143,6 +200,9 @@ function App() {
   ];
 
   const [result, setResult] = useState(null);
+  const [insuredSum, setInsuredSum] = useState("");
+  const [minimumAssumedLoss, setMinimumAssumedLoss] = useState("");
+  const [maximumAssumedLoss, setMaximumAssumedLoss] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [ndviResult, setNdviResult] = useState(null);
@@ -153,6 +213,7 @@ function App() {
   React.useEffect(() => {
     let cancelled = false;
     const imagery = result?.satellite_visualizations;
+    setSatelliteImageErrors({});
     setSatelliteImageData({ trueColour: null, ndvi: null });
     setSatelliteImagesReady(imagery?.status !== "SUCCESS");
 
@@ -443,10 +504,11 @@ function downloadFarmerReport() {
         periods.push({ year: safeValue(period.year), value: period.ndvi_mean });
       }
     });
-    if (isNumber(history.current_period?.ndvi_mean)) {
+    const currentNdvi = currentAssessmentNdvi(result);
+    if (isNumber(currentNdvi)) {
       periods.push({
-        year: safeValue(history.current_period.start_date?.slice(0, 4), "Current"),
-        value: history.current_period.ndvi_mean,
+        year: safeValue(history.current_period?.start_date?.slice(0, 4), "Current"),
+        value: currentNdvi,
       });
     }
 
@@ -546,10 +608,10 @@ function downloadFarmerReport() {
   labelValue("Crop", crop);
   labelValue("Observation period", `${safeValue(field.start_date)} to ${safeValue(field.end_date)}`);
   labelValue("Field location (latitude, longitude)", `${safeValue(field.latitude)}, ${safeValue(field.longitude)}`);
-  labelValue("Boundary used", satellite.geometry_type === "Polygon" ? "Farm polygon" : "Point buffer or boundary unavailable");
+  labelValue("Assessment area", field.geometry_type || (satellite.geometry_type === "Polygon" ? "Farm polygon" : "Point buffer (100 m)"));
   metricPair(
     { label: "CURRENT RAINFALL", value: number(weather.total_precipitation_mm, 1, " mm"), note: "Selected observation period" },
-    { label: "CURRENT NDVI", value: number(satellite.ndvi_mean, 4), note: "Vegetation indicator" },
+    { label: "CURRENT NDVI", value: number(currentAssessmentNdvi(result), 4), note: "Vegetation indicator" },
   );
   paragraph("Prototype evidence report only. It is not an official crop-loss certificate or insurance decision, and it does not confirm crop damage, eligibility, or a claim outcome.", { size: 8.5 });
   pageText(`Report ID: ${reportId}`, M, y, 7.5, "normal", [100, 110, 103]);
@@ -562,7 +624,7 @@ function downloadFarmerReport() {
   labelValue("Weather records returned", weather.source === "Unavailable" ? "Unavailable" : (isNumber(weather.days_returned) ? String(weather.days_returned) : "Unavailable"));
   labelValue("Weather source", weather.source);
   labelValue("Historical average rainfall", number(rainfallHistory.historical_average_mm, 1, " mm"));
-  labelValue("Change from historical average", percentage(stressIndicators.rainfall_change_percent));
+  labelValue("Change from historical average", percentage(currentRainfallChange(result)));
   const rainfallPeriods = Array.isArray(rainfallHistory.periods) ? rainfallHistory.periods : [];
   if (rainfallHistory.status === "SUCCESS" && rainfallPeriods.length) {
     subheading("Historical rainfall by year");
@@ -582,7 +644,7 @@ function downloadFarmerReport() {
   labelValue("Source", satellite.source || "Sentinel-2 source unavailable");
   labelValue("Satellite status", satellite.status);
   labelValue("Usable scenes returned", satellite.status === "UNAVAILABLE" || !isNumber(satellite.image_count) ? "Unavailable" : String(satellite.image_count));
-  labelValue("Current mean NDVI", number(satellite.ndvi_mean, 4));
+  labelValue("Current mean NDVI", number(currentAssessmentNdvi(result), 4));
   labelValue("Observation dates", `${safeValue(satellite.start_date, safeValue(field.start_date))} to ${safeValue(satellite.end_date, safeValue(field.end_date))}`);
   paragraph("NDVI is a vegetation indicator derived from reflected light. It is not a direct measurement of production and is not direct proof of crop loss.", { size: 8.8 });
 
@@ -615,17 +677,18 @@ function downloadFarmerReport() {
   // Historical NDVI comparison with the chart and its explanation kept together.
   sectionHeading("05", "Historical vegetation comparison", 30);
   if (history.status === "SUCCESS") {
-    labelValue("Current period mean NDVI", number(history.current_period?.ndvi_mean, 4));
+    labelValue("Current period mean NDVI", number(currentAssessmentNdvi(result), 4));
     labelValue("Historical average NDVI", number(history.historical_average_ndvi, 4));
-    labelValue("NDVI difference from average", isNumber(history.ndvi_change) ? `${history.ndvi_change > 0 ? "+" : ""}${history.ndvi_change.toFixed(4)}` : "Unavailable");
+    const ndviDifference = ndviDifferenceFromBaseline(result, history.historical_average_ndvi);
+    labelValue("NDVI difference from average", isNumber(ndviDifference) ? `${ndviDifference > 0 ? "+" : ""}${ndviDifference.toFixed(4)}` : "Unavailable");
     labelValue("Historical years available", isNumber(history.historical_years_available) ? `${history.historical_years_available} of ${safeValue(history.historical_years_requested)}` : "Unavailable");
-    const hasNdviChartData = isNumber(history.current_period?.ndvi_mean)
+    const hasNdviChartData = isNumber(currentAssessmentNdvi(result))
       || (Array.isArray(history.historical_periods)
         && history.historical_periods.some((period) => isNumber(period?.ndvi_mean)));
     ensureSpace(hasNdviChartData ? 90 : 35);
     subheading("Mean NDVI by year");
     drawNDVIChart();
-    const change = history.ndvi_change;
+    const change = ndviDifference;
     paragraph(!isNumber(change)
       ? "A directional comparison could not be stated because a valid NDVI difference was unavailable."
       : change < 0
@@ -639,7 +702,7 @@ function downloadFarmerReport() {
   }
 
   // Screening outputs are presented as evidence indicators, never as a loss estimate.
-  sectionHeading("06", "Crop stress screening", 34);
+  sectionHeading("06", "Provisional crop-loss screening", 44);
   const limitations = Array.isArray(stress.limitations) && stress.limitations.length
     ? stress.limitations
     : [
@@ -650,11 +713,14 @@ function downloadFarmerReport() {
   const stressLabelGap = 0.4;
   labelValue("Status", stress.status, stressLabelGap);
   labelValue("Screening category", stress.category, stressLabelGap);
+  labelValue("Screening concern", screeningConcern(stress.category, stress.status), stressLabelGap);
+  labelValue("Potential crop-stress indication", screeningIndication(stress.category), stressLabelGap);
   labelValue("Evidence quality", stress.evidence_quality, stressLabelGap);
-  labelValue("NDVI change", percentage(stressIndicators.ndvi_change_percent), stressLabelGap);
-  labelValue("Rainfall change", percentage(stressIndicators.rainfall_change_percent), stressLabelGap);
+  labelValue("NDVI change", percentage(stressIndicators.ndvi_change_percent ?? stress.ndvi_change_percent), stressLabelGap);
+  labelValue("Rainfall change", percentage(currentRainfallChange(result)), stressLabelGap);
   labelValue("Interpretation", stress.interpretation, stressLabelGap);
   labelValue("Recommended action", stress.recommended_action, stressLabelGap);
+  paragraph("Why this result: the provisional category reflects the available NDVI and rainfall comparisons against prototype screening thresholds. NDVI change is not a crop-loss percentage, and this is not a validated crop-loss detection model.", { size: 8.8 });
 
   const stressLimitationsDisclaimer = "Screening categories use provisional thresholds and require field verification. They are not a validated crop-loss assessment.";
   const limitationLinesHeight = limitations.reduce((height, limitation) => (
@@ -668,16 +734,26 @@ function downloadFarmerReport() {
   paragraph(stressLimitationsDisclaimer, { size: 8.8 });
 
   // Historical benchmark, clearly separated from farm-level yield or loss.
-  if (yieldData.status !== "NOT_REQUESTED") {
+  {
     sectionHeading("07", "Historical crop yield benchmark", 27);
     if (yieldData.status === "SUCCESS" && isNumber(yieldData.predicted_yield)) {
       metricCard(M, y, CW, "DISTRICT / CROP HISTORICAL BENCHMARK", `${yieldData.predicted_yield.toFixed(4)} tonnes/ha`, "Model output | not a farm measurement");
       y += 34;
       paragraph("This historical yield benchmark is based on district and crop information. It is not farm-level yield, measured production, or confirmed crop loss.");
     } else {
-      paragraph(safeValue(yieldData.message, "Historical yield benchmark is unavailable."));
-      paragraph("Any available benchmark is not farm-level yield or confirmed crop loss.", { size: 8.8 });
+      if (yieldData.status === "NOT_REQUESTED") paragraph("No optional historical yield benchmark was requested.");
+      else paragraph(safeValue(yieldData.message, "Historical yield benchmark is unavailable."));
     }
+    paragraph("A historical district/crop productivity benchmark is a broad model reference. It is not measured farm productivity, actual crop loss, or an insurance payout basis.", { size: 8.8 });
+  }
+
+  const payoutScenario = calculateIllustrativePayoutRange(insuredSum, minimumAssumedLoss, maximumAssumedLoss);
+  if (payoutScenario) {
+    sectionHeading("08", "Illustrative loss / payout scenario", 32);
+    labelValue("User-entered assumed loss range", `${payoutScenario.minimumPercent}% to ${payoutScenario.maximumPercent}%`);
+    labelValue("User-entered insured sum", `INR ${Number(insuredSum).toLocaleString("en-IN")}`);
+    labelValue("Illustrative amount range", `INR ${Math.round(payoutScenario.minimumAmount).toLocaleString("en-IN")} to INR ${Math.round(payoutScenario.maximumAmount).toLocaleString("en-IN")}`);
+    paragraph("Hypothetical arithmetic scenario using only the values entered by the user. This is not an official insurance payout, eligibility decision, or scheme formula. Percentages are not derived from NDVI or rainfall.", { size: 8.8 });
   }
 
   // Add consistent footers after all content and page breaks have been finalized.
@@ -834,8 +910,9 @@ function downloadFarmerReport() {
     </p>
   ) : (
     <p>
-      No farm boundary selected. Use the polygon tool on the map
-      to outline the field you have permission to analyze.
+      No farm boundary selected. The assessment will use a 100 m point buffer.
+      Draw a polygon to analyze the field boundary; clipped satellite imagery
+      requires a submitted polygon.
     </p>
   )}
 </div>
@@ -1006,7 +1083,7 @@ function downloadFarmerReport() {
   const periods = Array.isArray(comparison?.periods) ? comparison.periods : [];
   const current = result.weather_summary?.total_precipitation_mm;
   const average = comparison?.historical_average_mm;
-  const change = result.crop_stress_assessment?.indicators?.rainfall_change_percent;
+  const change = currentRainfallChange(result);
 
   return (
     <>
@@ -1052,10 +1129,11 @@ function downloadFarmerReport() {
   );
 })()}
 
-<h3>Crop stress screening</h3>
+<h3>Provisional crop-loss screening</h3>
 {(() => {
   const stress = result.crop_stress_assessment || {};
   const indicators = stress.indicators || {};
+  const concern = screeningConcern(stress.category, stress.status);
   const limitations = Array.isArray(stress.limitations) && stress.limitations.length
     ? stress.limitations
     : [
@@ -1069,11 +1147,15 @@ function downloadFarmerReport() {
       <div className="metric-grid">
         <div className="metric"><small>Status</small><strong>{displayText(stress.status)}</strong></div>
         <div className="metric"><small>Screening category</small><strong>{displayText(stress.category)}</strong></div>
+        <div className="metric"><small>Screening concern</small><strong className={`concern-chip concern-${concern.toLowerCase()}`}>{concern}</strong></div>
+        <div className="metric"><small>Potential crop-stress indication</small><strong>{screeningIndication(stress.category)}</strong></div>
         <div className="metric"><small>Evidence quality</small><strong>{displayText(stress.evidence_quality)}</strong></div>
-        <div className="metric"><small>NDVI change</small><strong>{formatNumber(indicators.ndvi_change_percent, 2, "%")}</strong></div>
-        <div className="metric"><small>Rainfall change</small><strong>{formatNumber(indicators.rainfall_change_percent, 2, "%")}</strong></div>
+        <div className="metric"><small>NDVI change</small><strong>{formatNumber(indicators.ndvi_change_percent ?? stress.ndvi_change_percent, 2, "%")}</strong></div>
+        <div className="metric"><small>Rainfall deviation from historical average</small><strong>{formatNumber(currentRainfallChange(result), 2, "%")}</strong></div>
       </div>
       <div className="evidence-note">
+        <strong>Why this result was generated</strong>
+        <p>{displayText(stress.interpretation)} The provisional category reflects available NDVI and rainfall comparisons; it is not a validated crop-loss detection model.</p>
         <strong>Interpretation</strong>
         <p>{displayText(stress.interpretation)}</p>
         <strong>Recommended action</strong>
@@ -1082,11 +1164,32 @@ function downloadFarmerReport() {
         <ul>{limitations.map((limitation, index) => <li key={`${index}-${limitation}`}>{limitation}</li>)}</ul>
       </div>
       <p className="evidence-caveat">
-        NDVI is vegetation evidence, not direct proof of crop loss. Screening categories use provisional thresholds and require field verification.
+        NDVI is vegetation evidence, not direct proof of crop loss, and its percentage change is not a crop-loss percentage. Rainfall deviation alone does not prove crop damage. Screening categories use provisional thresholds and require field verification.
       </p>
     </>
   );
 })()}
+
+<section className="scenario-calculator" aria-labelledby="scenario-title">
+  <h3 id="scenario-title">Illustrative loss / payout scenario</h3>
+  <p className="muted">Optional hypothetical calculator. Enter all three values; no percentages are inferred from NDVI, rainfall, or screening results.</p>
+  <div className="two-cols">
+    <label>Insured sum amount (₹)<input type="number" min="0.01" step="any" inputMode="decimal" value={insuredSum} onChange={(event) => setInsuredSum(event.target.value)} placeholder="Enter amount" /></label>
+    <label>Minimum assumed loss (%)<input type="number" min="0" max="100" step="any" inputMode="decimal" value={minimumAssumedLoss} onChange={(event) => setMinimumAssumedLoss(event.target.value)} placeholder="0–100" /></label>
+    <label>Maximum assumed loss (%)<input type="number" min="0" max="100" step="any" inputMode="decimal" value={maximumAssumedLoss} onChange={(event) => setMaximumAssumedLoss(event.target.value)} placeholder="0–100" /></label>
+  </div>
+  {(() => {
+    const scenario = calculateIllustrativePayoutRange(insuredSum, minimumAssumedLoss, maximumAssumedLoss);
+    const anyEntered = [insuredSum, minimumAssumedLoss, maximumAssumedLoss].some((value) => value !== "");
+    return scenario ? (
+      <div className="scenario-result" aria-live="polite">
+        <p><strong>Assumed loss range:</strong> {scenario.minimumPercent}%–{scenario.maximumPercent}%</p>
+        <p><strong>Illustrative amount range:</strong> ₹{Math.round(scenario.minimumAmount).toLocaleString("en-IN")}–₹{Math.round(scenario.maximumAmount).toLocaleString("en-IN")}</p>
+      </div>
+    ) : <p className={anyEntered ? "scenario-error" : "muted"} aria-live="polite">{anyEntered ? "Enter a positive insured sum and loss percentages from 0 to 100, with minimum no greater than maximum." : "Complete all fields to see an illustrative amount range."}</p>;
+  })()}
+  <p className="evidence-caveat">These values are hypothetical arithmetic scenarios based only on your inputs. They are not an official insurance payout, eligibility decision, or PMFBY formula.</p>
+</section>
 
 <div className="evidence-note">
   <strong>How to interpret rainfall</strong>
@@ -1118,7 +1221,7 @@ function downloadFarmerReport() {
     <div className="metric-grid">
       <div className="metric">
         <small>Current mean NDVI</small>
-        <strong>{formatNumber(result.satellite_evidence.ndvi_mean, 4)}</strong>
+        <strong>{formatNumber(currentAssessmentNdvi(result), 4)}</strong>
       </div>
 
       <div className="metric">
@@ -1170,7 +1273,9 @@ function downloadFarmerReport() {
       </p>
       <div className="satellite-image-grid">
         <figure className="satellite-figure">
-          {imagery.true_colour_url && !satelliteImageErrors.trueColour ? (
+          {!satelliteImagesReady ? (
+            <div className="satellite-image-unavailable">Loading true-colour image…</div>
+          ) : imagery.true_colour_url && !satelliteImageErrors.trueColour ? (
             <img
               src={`${API}${imagery.true_colour_url}`}
               alt={`Sentinel-2 true-colour image of the selected farm, ${observationPeriod}`}
@@ -1183,7 +1288,9 @@ function downloadFarmerReport() {
           <figcaption>Sentinel-2 true-colour RGB composite · {observationPeriod}</figcaption>
         </figure>
         <figure className="satellite-figure">
-          {imagery.ndvi_url && !satelliteImageErrors.ndvi ? (
+          {!satelliteImagesReady ? (
+            <div className="satellite-image-unavailable">Loading NDVI map…</div>
+          ) : imagery.ndvi_url && !satelliteImageErrors.ndvi ? (
             <img
               src={`${API}${imagery.ndvi_url}`}
               alt={`NDVI vegetation map of the selected farm, ${observationPeriod}`}
@@ -1225,7 +1332,7 @@ result.historical_comparison.status !== "SUCCESS" ? (
       <div className="metric">
         <small>Current NDVI</small>
         <strong>
-          {formatNumber(result.historical_comparison.current_period?.ndvi_mean, 4)}
+          {formatNumber(currentAssessmentNdvi(result), 4)}
         </strong>
       </div>
 
@@ -1239,8 +1346,8 @@ result.historical_comparison.status !== "SUCCESS" ? (
       <div className="metric">
         <small>NDVI change</small>
         <strong>
-          {isFiniteNumber(result.historical_comparison.ndvi_change)
-            ? `${result.historical_comparison.ndvi_change > 0 ? "+" : ""}${result.historical_comparison.ndvi_change.toFixed(4)}`
+          {isFiniteNumber(ndviDifferenceFromBaseline(result, result.historical_comparison.historical_average_ndvi))
+            ? `${ndviDifferenceFromBaseline(result, result.historical_comparison.historical_average_ndvi) > 0 ? "+" : ""}${ndviDifferenceFromBaseline(result, result.historical_comparison.historical_average_ndvi).toFixed(4)}`
             : "Unavailable"}
         </strong>
       </div>
@@ -1290,15 +1397,14 @@ result.historical_comparison.status !== "SUCCESS" ? (
         year: Number(
           result.historical_comparison.current_period?.start_date?.slice(0, 4) || 0
         ) || "Current",
-        ndvi:
-          result.historical_comparison.current_period?.ndvi_mean,
+        ndvi: currentAssessmentNdvi(result),
         image_count:
           result.historical_comparison.current_period?.image_count,
       },
     ]
       .sort((a, b) => a.year - b.year)
       .map((period) => {
-        const value = period.ndvi_mean ?? period.ndvi;
+        const value = period.year === "Current" ? period.ndvi : period.ndvi_mean ?? period.ndvi;
 
         return (
           <div className="ndvi-bar-item" key={period.year}>
@@ -1370,7 +1476,7 @@ result.historical_comparison.status !== "SUCCESS" ? (
     <p>
       The current mean NDVI is{" "}
       <strong>
-        {formatNumber(result.historical_comparison.current_period?.ndvi_mean, 4)}
+        {formatNumber(currentAssessmentNdvi(result), 4)}
       </strong>
       , compared with a historical average of{" "}
       <strong>
@@ -1382,17 +1488,18 @@ result.historical_comparison.status !== "SUCCESS" ? (
     <p>
       The difference is{" "}
       <strong>
-        {isFiniteNumber(result.historical_comparison.ndvi_change)
-          ? `${result.historical_comparison.ndvi_change > 0 ? "+" : ""}${result.historical_comparison.ndvi_change.toFixed(4)}`
+        {isFiniteNumber(ndviDifferenceFromBaseline(result, result.historical_comparison.historical_average_ndvi))
+          ? `${ndviDifferenceFromBaseline(result, result.historical_comparison.historical_average_ndvi) > 0 ? "+" : ""}${ndviDifferenceFromBaseline(result, result.historical_comparison.historical_average_ndvi).toFixed(4)}`
           : "Unavailable"}
       </strong>
-      . This indicates that the observed vegetation index is
-      {result.historical_comparison.ndvi_change < 0
-        ? " lower "
-        : result.historical_comparison.ndvi_change > 0
-          ? " higher "
-          : " equal to "}
-      the historical average for the selected calendar period.
+      . Comparison with the historical average is{" "}
+      {isFiniteNumber(ndviDifferenceFromBaseline(result, result.historical_comparison.historical_average_ndvi))
+        ? ndviDifferenceFromBaseline(result, result.historical_comparison.historical_average_ndvi) < 0
+          ? "below"
+          : ndviDifferenceFromBaseline(result, result.historical_comparison.historical_average_ndvi) > 0
+            ? "above"
+            : "equal to"
+        : "unavailable"}.
     </p>
 
     <p>
