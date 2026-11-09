@@ -4,7 +4,8 @@ import re
 import tempfile
 import joblib
 import pandas as pd
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
+from math import isfinite
 from time import time
 from typing import Any,Literal
 from uuid import uuid4
@@ -13,6 +14,7 @@ from app.earth_engine import (
     get_ndvi_summary,
     get_satellite_visualizations,
     compare_with_historical_baseline,
+    get_sentinel1_summary,
 )
 import requests
 from fastapi import FastAPI, HTTPException, Query, Response
@@ -30,6 +32,30 @@ _SATELLITE_IMAGE_CACHE_TTL_SECONDS = 30 * 60
 _SATELLITE_IMAGE_CACHE_MAX_ENTRIES = 8
 _SATELLITE_IMAGE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _SATELLITE_IMAGE_SUFFIXES = {"true-colour": "rgb", "ndvi": "ndvi"}
+_INDIA_TIMEZONE = timezone(timedelta(hours=5, minutes=30))
+
+
+def _current_india_date():
+    return datetime.now(_INDIA_TIMEZONE).date()
+
+
+def _validate_observation_dates(start_date, end_date):
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=400,
+            detail="start_date must be on or before end_date",
+        )
+    today = _current_india_date()
+    if start_date > today or end_date > today:
+        raise HTTPException(
+            status_code=400,
+            detail="Observation dates cannot be in the future.",
+        )
+    if (end_date - start_date).days > 400:
+        raise HTTPException(
+            status_code=400,
+            detail="Choose a period of 400 days or less for the MVP",
+        )
 
 
 def _image_cache_path(image_id, image_kind):
@@ -176,6 +202,9 @@ class AssessmentRequest(BaseModel):
     def validate_dates_and_boundary(self):
         if self.start_date > self.end_date:
             raise ValueError("start_date must be on or before end_date")
+
+        if self.start_date > _current_india_date() or self.end_date > _current_india_date():
+            raise ValueError("Observation dates cannot be in the future.")
 
         if (self.end_date - self.start_date).days > 400:
             raise ValueError("Choose a period of 400 days or less for the MVP")
@@ -340,8 +369,7 @@ def get_weather(
     start_date: date = Query(),
     end_date: date = Query(),
 ):
-    if start_date > end_date:
-        raise HTTPException(status_code=400, detail="start_date must be on or before end_date")
+    _validate_observation_dates(start_date, end_date)
 
     url = "https://archive-api.open-meteo.com/v1/archive"
     params = {
@@ -356,11 +384,35 @@ def get_weather(
         response = requests.get(url, params=params, timeout=25)
         response.raise_for_status()
         payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Weather provider returned invalid JSON.",
+        ) from exc
     except requests.RequestException as exc:
         raise HTTPException(status_code=502, detail=f"Weather provider request failed: {exc}") from exc
 
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=502,
+            detail="Weather provider returned an unexpected response.",
+        )
+    if payload.get("error"):
+        reason = payload.get("reason") or "Weather provider rejected the request."
+        raise HTTPException(status_code=502, detail=str(reason))
+
     daily = payload.get("daily", {})
+    if not isinstance(daily, dict):
+        raise HTTPException(
+            status_code=502,
+            detail="Weather provider response did not include daily weather data.",
+        )
     times = daily.get("time", [])
+    if not isinstance(times, list):
+        raise HTTPException(
+            status_code=502,
+            detail="Weather provider returned an invalid daily time series.",
+        )
     rows = []
     for i, day in enumerate(times):
         rows.append({
@@ -370,11 +422,38 @@ def get_weather(
             "temperature_min_c": _at(daily.get("temperature_2m_min", []), i),
         })
 
+    precipitation_days = sum(
+        1 for row in rows
+        if isinstance(row["precipitation_mm"], (int, float))
+        and not isinstance(row["precipitation_mm"], bool)
+        and isfinite(float(row["precipitation_mm"]))
+    )
+    requested_days = (end_date - start_date).days + 1
+    complete_precipitation = (
+        len(rows) == requested_days
+        and [row["date"] for row in rows] == [
+            (start_date + timedelta(days=index)).isoformat()
+            for index in range(requested_days)
+        ]
+        and precipitation_days == requested_days
+    )
+
     return {
+        "status": (
+            "SUCCESS" if complete_precipitation
+            else "PARTIAL" if precipitation_days
+            else "UNAVAILABLE"
+        ),
         "source": "Open-Meteo Historical Weather API (reanalysis)",
         "latitude": latitude,
         "longitude": longitude,
         "daily": rows,
+        "precipitation_days_available": precipitation_days,
+        "requested_days": requested_days,
+        "message": (
+            None if complete_precipitation
+            else f"Rainfall coverage is incomplete: {precipitation_days} of {requested_days} requested days have valid precipitation data."
+        ),
         "note": "Weather reanalysis is an estimate for the area, not a field-level sensor reading.",
     }
 
@@ -397,10 +476,13 @@ def assess(request: AssessmentRequest):
             end_date=request.end_date,
         )
 
-    except HTTPException:
+    except HTTPException as exc:
         weather = {
             "daily": [],
-            "source": "Unavailable"
+            "source": "Unavailable",
+            "status": "UNAVAILABLE",
+            "precipitation_days_available": 0,
+            "message": str(exc.detail),
         }
 
     daily = weather.get("daily", [])
@@ -409,11 +491,13 @@ def assess(request: AssessmentRequest):
         row["precipitation_mm"]
         for row in daily
         if isinstance(row.get("precipitation_mm"), (int, float))
+        and not isinstance(row.get("precipitation_mm"), bool)
+        and isfinite(float(row["precipitation_mm"]))
     ]
 
     total_rainfall = (
         round(sum(rainfall), 2)
-        if rainfall else None
+        if weather.get("status") == "SUCCESS" else None
     )
 
     historical_rainfall_comparison = (
@@ -447,6 +531,32 @@ def assess(request: AssessmentRequest):
             "message": "Satellite data could not be retrieved.",
             "image_count": 0,
             "ndvi_mean": None,
+        }
+
+    try:
+        initialize_earth_engine()
+        satellite_radar_evidence = get_sentinel1_summary(
+            latitude=request.latitude,
+            longitude=request.longitude,
+            start_date=request.start_date.isoformat(),
+            end_date=request.end_date.isoformat(),
+            field_boundary=request.field_boundary,
+        )
+    except Exception:
+        satellite_radar_evidence = {
+            "status": "UNAVAILABLE",
+            "message": "Sentinel-1 SAR evidence is unavailable. Check Earth Engine access and try again.",
+            "source": "COPERNICUS/S1_GRD",
+            "start_date": request.start_date.isoformat(),
+            "end_date": request.end_date.isoformat(),
+            "image_count": 0,
+            "vv_mean_db": None,
+            "vh_mean_db": None,
+            "orbit_pass": None,
+            "geometry_type": (
+                "Polygon" if request.field_boundary is not None
+                else "Point buffer (100 m)"
+            ),
         }
 
     satellite_available = (
@@ -493,6 +603,46 @@ def assess(request: AssessmentRequest):
                     "ndvi_url": f"/api/satellite/images/{image_id}/ndvi",
                     "ndvi_legend": generated["ndvi_legend"],
                 }
+                # Generate a same-length reference composite immediately before
+                # the selected period so users can visually compare conditions.
+                period_days = (request.end_date - request.start_date).days + 1
+                before_end = request.start_date - timedelta(days=1)
+                before_start = before_end - timedelta(days=period_days - 1)
+                before_visualizations = {
+                    "status": "UNAVAILABLE",
+                    "message": "A pre-period Sentinel-2 comparison is unavailable.",
+                    "start_date": before_start.isoformat(),
+                    "end_date": before_end.isoformat(),
+                    "source": generated["source"],
+                }
+                try:
+                    before_generated = get_satellite_visualizations(
+                        latitude=request.latitude,
+                        longitude=request.longitude,
+                        start_date=before_start.isoformat(),
+                        end_date=before_end.isoformat(),
+                        field_boundary=request.field_boundary,
+                    )
+                    if before_generated.get("status") == "SUCCESS":
+                        before_image_id = _store_satellite_images(before_generated)
+                        before_visualizations = {
+                            "status": "SUCCESS",
+                            "source": before_generated["source"],
+                            "start_date": before_generated["start_date"],
+                            "end_date": before_generated["end_date"],
+                            "image_count": before_generated["image_count"],
+                            "geometry_type": before_generated["geometry_type"],
+                            "true_colour_url": f"/api/satellite/images/{before_image_id}/true-colour",
+                            "ndvi_url": f"/api/satellite/images/{before_image_id}/ndvi",
+                        }
+                    else:
+                        before_visualizations.update({
+                            key: value for key, value in before_generated.items()
+                            if key not in {"true_colour_png", "ndvi_png"}
+                        })
+                except Exception:
+                    pass
+                satellite_visualizations["before_period"] = before_visualizations
             else:
                 satellite_visualizations = {
                     key: value for key, value in generated.items()
@@ -665,11 +815,16 @@ def assess(request: AssessmentRequest):
 
         "weather_summary": {
             "source": weather.get("source", "Unavailable"),
-            "days_returned": len(daily),
+            "status": weather.get("status", "UNAVAILABLE"),
+            "days_returned": weather.get("precipitation_days_available", 0),
+            "requested_days": weather.get("requested_days"),
             "total_precipitation_mm": total_rainfall,
+            "message": weather.get("message"),
         },
 
         "satellite_evidence": satellite,
+
+        "satellite_radar_evidence": satellite_radar_evidence,
 
         "satellite_visualizations": satellite_visualizations,
 
@@ -709,17 +864,7 @@ def get_ndvi(
     start_date: date = Query(),
     end_date: date = Query(),
 ):
-    if start_date > end_date:
-        raise HTTPException(
-            status_code=400,
-            detail="start_date must be on or before end_date",
-        )
-
-    if (end_date - start_date).days > 400:
-        raise HTTPException(
-            status_code=400,
-            detail="Choose a period of 400 days or less for the MVP",
-        )
+    _validate_observation_dates(start_date, end_date)
 
     try:
         initialize_earth_engine()
@@ -741,7 +886,19 @@ def get_ndvi(
 
 
 def _at(values, index):
+    if not isinstance(values, (list, tuple)):
+        return None
     return values[index] if index < len(values) else None
+
+
+def _date_in_year(value, year):
+    try:
+        return value.replace(year=year)
+    except ValueError:
+        import calendar
+
+        day = min(value.day, calendar.monthrange(year, value.month)[1])
+        return value.replace(year=year, day=day)
 
 
 def compare_rainfall_with_historical_baseline(
@@ -757,37 +914,8 @@ def compare_rainfall_with_historical_baseline(
 
     for offset in range(1, years + 1):
         target_year = start_date.year - offset
-
-        try:
-            historical_start = start_date.replace(
-                year=target_year
-            )
-            historical_end = end_date.replace(
-                year=target_year
-            )
-        except ValueError:
-            # Handles dates such as February 29.
-            import calendar
-
-            start_day = min(
-                start_date.day,
-                calendar.monthrange(
-                    target_year, start_date.month
-                )[1],
-            )
-            end_day = min(
-                end_date.day,
-                calendar.monthrange(
-                    target_year, end_date.month
-                )[1],
-            )
-
-            historical_start = start_date.replace(
-                year=target_year, day=start_day
-            )
-            historical_end = end_date.replace(
-                year=target_year, day=end_day
-            )
+        historical_start = _date_in_year(start_date, target_year)
+        historical_end = _date_in_year(end_date, end_date.year - offset)
 
         try:
             historical_weather = get_weather(
@@ -803,13 +931,27 @@ def compare_rainfall_with_historical_baseline(
                 if isinstance(
                     row.get("precipitation_mm"), (int, float)
                 )
+                and not isinstance(row.get("precipitation_mm"), bool)
+                and isfinite(float(row["precipitation_mm"]))
             ]
 
-            if values:
+            expected_days = (historical_end - historical_start).days + 1
+            expected_dates = [
+                (historical_start + timedelta(days=index)).isoformat()
+                for index in range(expected_days)
+            ]
+            if (
+                len(values) == expected_days
+                and len(historical_weather.get("daily", [])) == expected_days
+                and [row.get("date") for row in historical_weather.get("daily", [])]
+                == expected_dates
+            ):
                 historical_periods.append({
                     "year": target_year,
                     "total_rainfall_mm": round(sum(values), 2),
                     "days_returned": len(values),
+                    "start_date": historical_start.isoformat(),
+                    "end_date": historical_end.isoformat(),
                 })
 
         except Exception:

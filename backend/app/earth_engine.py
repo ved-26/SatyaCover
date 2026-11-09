@@ -259,6 +259,96 @@ def get_ndvi_summary(
 
 
 
+SENTINEL1_COLLECTION_ID = "COPERNICUS/S1_GRD"
+
+
+def get_sentinel1_summary(
+    latitude: float,
+    longitude: float,
+    start_date: str,
+    end_date: str,
+    buffer_meters: int = 100,
+    field_boundary: dict | None = None,
+):
+    """Return descriptive Sentinel-1 VV/VH backscatter for one orbit pass.
+
+    The pass with the most usable scenes is selected to avoid mixing
+    ascending and descending viewing geometry. Values are mean sigma-naught
+    backscatter in dB, not crop-loss estimates.
+    """
+    start, end, exclusive_end = _validated_period(start_date, end_date)
+    region, geometry_type = _build_region(
+        latitude, longitude, buffer_meters, field_boundary
+    )
+    collection = (
+        ee.ImageCollection(SENTINEL1_COLLECTION_ID)
+        .filterBounds(region)
+        .filterDate(start.isoformat(), exclusive_end)
+        .filter(ee.Filter.eq("instrumentMode", "IW"))
+        .filter(ee.Filter.eq("resolution_meters", 10))
+        .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VV"))
+        .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VH"))
+    )
+    counts = {
+        orbit_pass: collection.filter(
+            ee.Filter.eq("orbitProperties_pass", orbit_pass)
+        ).size().getInfo()
+        for orbit_pass in ("ASCENDING", "DESCENDING")
+    }
+    selected_pass = max(counts, key=counts.get)
+    image_count = counts[selected_pass]
+    metadata = {
+        "source": SENTINEL1_COLLECTION_ID,
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "image_count": image_count,
+        "geometry_type": geometry_type,
+        "instrument_mode": "IW",
+        "polarizations": ["VV", "VH"],
+        "orbit_pass": selected_pass if image_count else None,
+        "orbit_pass_scene_counts": counts,
+    }
+    if image_count == 0:
+        return {
+            "status": "INSUFFICIENT_DATA",
+            "message": "No Sentinel-1 IW VV/VH scenes were available for this area and period.",
+            "vv_mean_db": None,
+            "vh_mean_db": None,
+            **metadata,
+        }
+
+    composite = (
+        collection
+        .filter(ee.Filter.eq("orbitProperties_pass", selected_pass))
+        .median()
+    )
+    statistics = composite.select(["VV", "VH"]).reduceRegion(
+        reducer=ee.Reducer.mean(),
+        geometry=region,
+        scale=10,
+        maxPixels=1000000,
+        bestEffort=True,
+    ).getInfo()
+    vv = statistics.get("VV")
+    vh = statistics.get("VH")
+    if vv is None and vh is None:
+        return {
+            "status": "INSUFFICIENT_DATA",
+            "message": "Sentinel-1 scenes were found, but no valid VV/VH pixels were available for this area.",
+            "vv_mean_db": None,
+            "vh_mean_db": None,
+            **metadata,
+        }
+
+    return {
+        "status": "SUCCESS",
+        "message": "Descriptive radar backscatter only; not a crop-loss or damage assessment.",
+        "vv_mean_db": round(float(vv), 2) if vv is not None else None,
+        "vh_mean_db": round(float(vh), 2) if vh is not None else None,
+        **metadata,
+    }
+
+
 def compare_with_historical_baseline(
     latitude: float,
     longitude: float,

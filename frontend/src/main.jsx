@@ -60,6 +60,13 @@ function displayText(value, fallback = "Unavailable") {
     : value;
 }
 
+function localISODate(value = new Date()) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function calculateIllustrativePayoutRange(insuredSum, minimumPercent, maximumPercent) {
   const values = [insuredSum, minimumPercent, maximumPercent].map((value) =>
     value === "" || value == null ? NaN : Number(value)
@@ -114,12 +121,16 @@ function MapUpdater({ position }) {
 }
 
 
-function FieldBoundaryDrawer({ onBoundaryChange }) {
+function FieldBoundaryDrawer({ onBoundaryChange, boundary }) {
   const map = useMap();
 
   React.useEffect(() => {
     const drawnItems = new L.FeatureGroup();
     map.addLayer(drawnItems);
+
+    if (boundary?.type === "Polygon") {
+      L.geoJSON(boundary).eachLayer((layer) => drawnItems.addLayer(layer));
+    }
 
     const drawControl = new L.Control.Draw({
       draw: {
@@ -176,14 +187,74 @@ function FieldBoundaryDrawer({ onBoundaryChange }) {
   return null;
 }
 
+function HomeLanding({ onNavigate }) {
+  const capabilities = [
+    ["01", "Satellite monitoring", "Review Sentinel-2 vegetation imagery and available radar evidence."],
+    ["02", "Weather context", "Compare rainfall for the selected period with historical records when available."],
+    ["03", "Explainable screening", "See provisional signals, their evidence, and clear field-verification guidance."],
+    ["04", "Farmer report", "Download a readable PDF with sources, comparison periods, and limitations."],
+  ];
+  return (
+    <div className="landing-page">
+      <section className="landing-hero">
+        <div className="landing-copy">
+          <span className="eyebrow">FARM EVIDENCE, MADE CLEAR</span>
+          <h1>Smarter crop monitoring.<br />Clearer insurance evidence.</h1>
+          <p>Bring satellite vegetation signals, rainfall context, and historical comparisons together for a farm-focused evidence review.</p>
+          <div className="landing-actions">
+            <button type="button" onClick={() => onNavigate("assessment")}>Start crop assessment <span>→</span></button>
+            <button type="button" className="button-secondary" onClick={() => onNavigate("dashboard")}>Explore dashboard</button>
+          </div>
+          <p className="landing-note">This tool provides supporting evidence. It does not confirm crop loss or decide insurance payouts.</p>
+        </div>
+        <div className="hero-visual" aria-label="Illustrative farm visualization">
+          <div className="hero-map-grid"><div className="hero-field field-one"/><div className="hero-field field-two"/><div className="hero-field field-three"/><div className="hero-field field-four"/><div className="hero-boundary"/></div>
+          <span className="visual-label">Illustrative farm visualization</span>
+          <span className="visual-label-sub">Actual imagery appears only when available for a submitted field.</span>
+        </div>
+      </section>
+      <section className="landing-capabilities">
+        <div className="section-intro"><span className="section-kicker">HOW IT WORKS</span><h2>Evidence in four clear steps</h2><p>From field boundary to an understandable report.</p></div>
+        <div className="capability-grid">{capabilities.map(([number, title, description]) => <article className="capability-card" key={number}><span className="capability-number">{number}</span><h3>{title}</h3><p>{description}</p></article>)}</div>
+      </section>
+      <section className="landing-limitations"><strong>Interpret evidence carefully</strong><p>NDVI is vegetation evidence, not direct proof of crop loss. Rainfall variation alone does not prove damage. Screening thresholds are provisional and require field verification.</p></section>
+    </div>
+  );
+}
+
+function DashboardOverview({ result, onNavigate }) {
+  const scenes = result?.satellite_evidence?.image_count;
+  const concern = screeningConcern(result?.crop_stress_assessment?.screening_category, result?.crop_stress_assessment?.status);
+  const category = result?.crop_stress_assessment?.screening_category;
+  const field = result?.field || {};
+  return (
+    <section className="dashboard-page">
+      <div className="page-heading-row"><div><span className="section-kicker">OVERVIEW</span><h1>Farmer dashboard</h1><p>A clear view of farm evidence and recent activity.</p></div><button type="button" onClick={() => onNavigate("assessment")}>＋ New assessment</button></div>
+      <div className="overview-grid">
+        <article className="overview-card"><span>ASSESSMENT HISTORY</span><strong>Not stored</strong><small>The backend does not keep a registered farm or assessment history.</small></article>
+        <article className="overview-card"><span>SATELLITE OBSERVATIONS</span><strong>{isFiniteNumber(scenes) && scenes > 0 ? scenes : "Unavailable"}</strong><small>Scene count from the latest assessment, when returned.</small></article>
+        <article className="overview-card"><span>LATEST SCREENING</span><strong className={`concern-${concern.toLowerCase()}`}>{concern === "Unavailable" ? "Not assessed" : concern}</strong><small>{displayText(category, "Start an assessment to see screening.")}</small></article>
+        <article className="overview-card"><span>FARMER REPORTS</span><strong>{result ? "1 available" : "No reports yet"}</strong><small>Download a report after an assessment.</small></article>
+      </div>
+      <div className="dashboard-columns">
+        <article className="dashboard-card farm-overview-card"><div className="card-heading"><div><h2>Farm overview</h2><p>Current assessment context</p></div><button type="button" className="text-action" onClick={() => onNavigate("assessment")}>＋ Add assessment</button></div>
+          {result ? <div className="farm-detail-grid"><div><small>Crop</small><strong>{displayText(field.crop, "Not provided")}</strong></div><div><small>Location</small><strong>{isFiniteNumber(field.latitude) && isFiniteNumber(field.longitude) ? `${Number(field.latitude).toFixed(4)}, ${Number(field.longitude).toFixed(4)}` : "Unavailable"}</strong></div><div><small>Boundary</small><strong>{displayText(field.geometry_type, "Unavailable")}</strong></div><div><small>Observation period</small><strong>{displayText(field.start_date)} → {displayText(field.end_date)}</strong></div></div> : <div className="empty-card-state"><div className="empty-state-mark">⌖</div><strong>No farm assessment yet</strong><p>Draw a field boundary to request a satellite and weather evidence review.</p><button type="button" className="button-secondary" onClick={() => onNavigate("assessment")}>Select a farm</button></div>}
+        </article>
+        <article className="dashboard-card latest-screening-card"><h2>Latest screening</h2><p>Evidence summary</p><div className={`screening-empty ${concern !== "Unavailable" ? `screening-${concern.toLowerCase()}` : ""}`}><span>{concern === "Unavailable" ? "NOT AVAILABLE" : `${concern} CONCERN`}</span><strong>{result ? screeningIndication(category) : "No evidence to screen yet"}</strong></div><p className="small-note">Screening is provisional, uses available comparisons, and requires field verification.</p><button type="button" className="text-action" onClick={() => onNavigate(result ? "results" : "assessment")}>{result ? "Review results →" : "Start an assessment →"}</button></article>
+      </div>
+      <article className="dashboard-card recent-card"><div className="card-heading"><div><h2>Latest assessment</h2><p>Current in-memory result; history is not persisted.</p></div><button type="button" className="text-action" onClick={() => onNavigate("results")}>View report →</button></div>{result ? <div className="recent-row"><span>{displayText(field.crop, "Farm assessment")}</span><span>{displayText(field.start_date)} – {displayText(field.end_date)}</span><span>{displayText(category, "Screening unavailable")}</span><button type="button" className="text-action" onClick={() => onNavigate("results")}>Open report</button></div> : <div className="empty-history">No assessment in this session. Submitted assessments are not saved to a database.</div>}</article>
+    </section>
+  );
+}
+
 
 function App() {
   const [form, setForm] = useState({
-  latitude: "18.5204",
-  longitude: "73.8567",
-  crop: "soybean",
-  start_date: "2026-06-01",
-  end_date: "2026-09-30",
+  latitude: "",
+  longitude: "",
+  crop: "other",
+  start_date: "",
+  end_date: "",
 
   state_name: "",
   district_name: "",
@@ -193,10 +264,11 @@ function App() {
 });
 
   const [fieldBoundary, setFieldBoundary] = useState(null);
+  const maxObservationDate = localISODate();
 
   const position = [
-    Number(form.latitude) || 0,
-    Number(form.longitude) || 0,
+    form.latitude.trim() === "" ? 18.5204 : Number(form.latitude),
+    form.longitude.trim() === "" ? 73.8567 : Number(form.longitude),
   ];
 
   const [result, setResult] = useState(null);
@@ -207,14 +279,35 @@ function App() {
   const [error, setError] = useState("");
   const [ndviResult, setNdviResult] = useState(null);
   const [satelliteImageErrors, setSatelliteImageErrors] = useState({});
-  const [satelliteImageData, setSatelliteImageData] = useState({ trueColour: null, ndvi: null });
+  const [satelliteImageData, setSatelliteImageData] = useState({ trueColour: null, ndvi: null, beforeTrueColour: null, beforeNdvi: null });
   const [satelliteImagesReady, setSatelliteImagesReady] = useState(true);
+  const validPages = ["home", "dashboard", "assessment", "results"];
+  const initialPage = window.location.hash.replace(/^#\/?/, "");
+  const [activePage, setActivePage] = useState(validPages.includes(initialPage) ? initialPage : "home");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  React.useEffect(() => {
+    const syncPage = () => {
+      const page = window.location.hash.replace(/^#\/?/, "");
+      setActivePage(validPages.includes(page) ? page : "home");
+    };
+    window.addEventListener("hashchange", syncPage);
+    return () => window.removeEventListener("hashchange", syncPage);
+  }, []);
+
+  function navigate(page) {
+    if (!validPages.includes(page)) return;
+    if (window.location.hash !== `#${page}`) window.location.hash = page;
+    setActivePage(page);
+    setSidebarOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   React.useEffect(() => {
     let cancelled = false;
     const imagery = result?.satellite_visualizations;
     setSatelliteImageErrors({});
-    setSatelliteImageData({ trueColour: null, ndvi: null });
+    setSatelliteImageData({ trueColour: null, ndvi: null, beforeTrueColour: null, beforeNdvi: null });
     setSatelliteImagesReady(imagery?.status !== "SUCCESS");
 
     async function loadImage(path) {
@@ -239,9 +332,11 @@ function App() {
       Promise.all([
         loadImage(imagery.true_colour_url),
         loadImage(imagery.ndvi_url),
-      ]).then(([trueColour, ndvi]) => {
+        loadImage(imagery.before_period?.true_colour_url),
+        loadImage(imagery.before_period?.ndvi_url),
+      ]).then(([trueColour, ndvi, beforeTrueColour, beforeNdvi]) => {
         if (!cancelled) {
-          setSatelliteImageData({ trueColour, ndvi });
+          setSatelliteImageData({ trueColour, ndvi, beforeTrueColour, beforeNdvi });
           setSatelliteImagesReady(true);
         }
       });
@@ -258,6 +353,11 @@ function validateAssessmentDates(startDate, endDate) {
 
   if (endDate < startDate) {
     return "End date must be on or after the start date.";
+  }
+
+  const today = localISODate();
+  if (startDate > today || endDate > today) {
+    return "Observation dates cannot be in the future. Choose today or an earlier date.";
   }
 
   const start = new Date(`${startDate}T00:00:00`);
@@ -350,12 +450,14 @@ if (!fieldBoundary) {
       const body = await response.json();
 
       if (!response.ok) {
-        throw new Error(
-          body.detail || "Assessment request failed"
-        );
+        const detail = Array.isArray(body.detail)
+          ? body.detail.map((item) => item?.msg).filter(Boolean).join(" ")
+          : body.detail;
+        throw new Error(detail || "Assessment request failed");
       }
 
       setResult(body);
+      navigate("results");
       
     } catch (err) {
       setError(
@@ -382,13 +484,15 @@ function downloadFarmerReport() {
   const weather = result.weather_summary || {};
   const satellite = result.satellite_evidence || {};
   const imageMetadata = visualizations;
+  const beforeImageMetadata = visualizations.before_period || {};
   const history = result.historical_comparison || {};
   const rainfallHistory = result.historical_rainfall_comparison || {};
+  const radarEvidence = result.satellite_radar_evidence || {};
   const stress = result.crop_stress_assessment || {};
   const stressIndicators = stress.indicators || {};
   const yieldData = result.historical_yield_benchmark || {};
   const imageObservationPeriod = `${safeValue(imageMetadata.start_date, safeValue(field.start_date))} to ${safeValue(imageMetadata.end_date, safeValue(field.end_date))}`;
-  const imageContext = `Source: ${safeValue(imageMetadata.source)}. Observation period: ${imageObservationPeriod}. Scenes: ${isNumber(imageMetadata.image_count) ? imageMetadata.image_count : "Unavailable"}.`;
+  const imageContext = `Source: ${safeValue(imageMetadata.source)}. Requested search period: ${imageObservationPeriod}. Scenes: ${isNumber(imageMetadata.image_count) ? imageMetadata.image_count : "Unavailable"}.`;
   const crop = safeValue(field.crop, "Farm");
   const reportDate = new Date().toLocaleDateString("en-IN");
   const reportId = "SC-" + Date.now().toString().slice(-8);
@@ -474,6 +578,22 @@ function downloadFarmerReport() {
       y += 4.5;
     });
     y += after;
+  }
+
+  function linkValue(label, url) {
+    ensureSpace(14);
+    pageText(label, M, y, 7.8, "normal", [110, 120, 113]);
+    y += 4.2;
+    const lines = wrappedLines(url, CW, 8.8);
+    lines.forEach((line) => {
+      ensureSpace(4.5);
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(8.8);
+      pdf.setTextColor(24, 105, 68);
+      pdf.textWithLink(line, M, y, { url });
+      y += 4.5;
+    });
+    y += 2;
   }
 
   function metricCard(x, yy, width, label, value, note) {
@@ -600,17 +720,17 @@ function downloadFarmerReport() {
   // Cover and farm summary.
   pdf.setFillColor(20, 83, 53);
   pdf.rect(0, 0, W, 62, "F");
-  pageText("SATYACOVER", M, 21, 11, "bold", [255, 255, 255]);
+  pageText("FARM EVIDENCE", M, 21, 11, "bold", [255, 255, 255]);
   pageText("FARM EVIDENCE REPORT", M, 39, 20, "bold", [255, 255, 255]);
   pageText("Satellite and weather observations for review", M, 50, 8.5, "normal", [225, 242, 229]);
   y = 73;
   sectionHeading("01", "Farm and observation period", 39);
   labelValue("Crop", crop);
-  labelValue("Observation period", `${safeValue(field.start_date)} to ${safeValue(field.end_date)}`);
+  labelValue("Requested observation period", `${safeValue(field.start_date)} to ${safeValue(field.end_date)}`);
   labelValue("Field location (latitude, longitude)", `${safeValue(field.latitude)}, ${safeValue(field.longitude)}`);
   labelValue("Assessment area", field.geometry_type || (satellite.geometry_type === "Polygon" ? "Farm polygon" : "Point buffer (100 m)"));
   metricPair(
-    { label: "CURRENT RAINFALL", value: number(weather.total_precipitation_mm, 1, " mm"), note: "Selected observation period" },
+    { label: "CURRENT RAINFALL", value: number(weather.total_precipitation_mm, 1, " mm"), note: "Complete requested period" },
     { label: "CURRENT NDVI", value: number(currentAssessmentNdvi(result), 4), note: "Vegetation indicator" },
   );
   paragraph("Prototype evidence report only. It is not an official crop-loss certificate or insurance decision, and it does not confirm crop damage, eligibility, or a claim outcome.", { size: 8.5 });
@@ -621,17 +741,21 @@ function downloadFarmerReport() {
   // Rainfall evidence and comparison.
   sectionHeading("02", "Rainfall evidence", 30);
   labelValue("Current rainfall total", number(weather.total_precipitation_mm, 1, " mm"));
-  labelValue("Weather records returned", weather.source === "Unavailable" ? "Unavailable" : (isNumber(weather.days_returned) ? String(weather.days_returned) : "Unavailable"));
+  labelValue("Valid rainfall days returned", isNumber(weather.days_returned) ? `${weather.days_returned}${isNumber(weather.requested_days) ? ` of ${weather.requested_days}` : ""}` : "Unavailable");
+  labelValue("Rainfall data status", safeValue(weather.status));
+  if (weather.message) paragraph(weather.message, { size: 8.5 });
   labelValue("Weather source", weather.source);
   labelValue("Historical average rainfall", number(rainfallHistory.historical_average_mm, 1, " mm"));
   labelValue("Change from historical average", percentage(currentRainfallChange(result)));
   const rainfallPeriods = Array.isArray(rainfallHistory.periods) ? rainfallHistory.periods : [];
   if (rainfallHistory.status === "SUCCESS" && rainfallPeriods.length) {
+    // Keep the subheading with at least the first historical year row.
+    ensureSpace(22);
     subheading("Historical rainfall by year");
     rainfallPeriods.forEach((period) => {
       labelValue(
         isNumber(period.year) ? String(period.year) : "Historical year",
-        `${number(period.total_rainfall_mm, 1, " mm")} | ${isNumber(period.days_returned) ? `${period.days_returned} records` : "record count unavailable"}`,
+        `${number(period.total_rainfall_mm, 1, " mm")} | ${isNumber(period.days_returned) ? `${period.days_returned} valid days` : "record count unavailable"}${period.start_date && period.end_date ? ` | ${period.start_date} to ${period.end_date}` : ""}`,
       );
     });
   } else {
@@ -645,7 +769,8 @@ function downloadFarmerReport() {
   labelValue("Satellite status", satellite.status);
   labelValue("Usable scenes returned", satellite.status === "UNAVAILABLE" || !isNumber(satellite.image_count) ? "Unavailable" : String(satellite.image_count));
   labelValue("Current mean NDVI", number(currentAssessmentNdvi(result), 4));
-  labelValue("Observation dates", `${safeValue(satellite.start_date, safeValue(field.start_date))} to ${safeValue(satellite.end_date, safeValue(field.end_date))}`);
+  labelValue("Requested Sentinel-2 search period", `${safeValue(satellite.start_date, safeValue(field.start_date))} to ${safeValue(satellite.end_date, safeValue(field.end_date))}`);
+  paragraph("The period above is the requested search interval. Individual Sentinel-2 scene acquisition dates are not included in this report.", { size: 8.2 });
   paragraph("NDVI is a vegetation indicator derived from reflected light. It is not a direct measurement of production and is not direct proof of crop loss.", { size: 8.8 });
 
   // Field-clipped thumbnails are optional; image fetch failures do not block the report.
@@ -654,8 +779,19 @@ function downloadFarmerReport() {
   if (imageMetadata.status === "SUCCESS") {
     paragraph(imageContext, { size: 8.5, after: 3 });
 
+    const beforePeriod = `${safeValue(beforeImageMetadata.start_date)} to ${safeValue(beforeImageMetadata.end_date)}`;
+    if (beforeImageMetadata.status === "SUCCESS") {
+      drawSatelliteImage(
+        "Before: Sentinel-2 true-colour reference",
+        imageData.beforeTrueColour,
+        `Same-length reference period before the selected observation period: ${beforePeriod}. Source: ${safeValue(beforeImageMetadata.source)}; scenes: ${isNumber(beforeImageMetadata.image_count) ? beforeImageMetadata.image_count : "Unavailable"}.`,
+      );
+    } else {
+      paragraph(`Before-period reference image is unavailable (${beforePeriod}). ${safeValue(beforeImageMetadata.message, "No usable Sentinel-2 image was returned.")}`, { size: 8.4 });
+    }
+
     const rgbAdded = drawSatelliteImage(
-      "True-colour RGB composite",
+      "Selected period: true-colour RGB composite",
       imageData.trueColour,
       `${imageContext} Sentinel-2 B4/B3/B2 true-colour composite, clipped to the selected farm polygon.`,
     );
@@ -673,6 +809,19 @@ function downloadFarmerReport() {
     paragraph(safeValue(imageMetadata.message, "Satellite imagery is unavailable for this field and observation period."));
   }
   paragraph("Satellite images can be affected by cloud cover, observation quality, crop stage, and field conditions. Imagery cannot independently establish insurance eligibility or payout.", { size: 8.5 });
+
+  subheading("Sentinel-1 SAR evidence");
+  labelValue("SAR status", radarEvidence.status);
+  labelValue("Source and mode", `${safeValue(radarEvidence.source)} | ${safeValue(radarEvidence.instrument_mode)}`);
+  labelValue("Requested Sentinel-1 search period", `${safeValue(radarEvidence.start_date)} to ${safeValue(radarEvidence.end_date)}`);
+  labelValue("Usable scenes", isNumber(radarEvidence.image_count) ? String(radarEvidence.image_count) : "Unavailable");
+  labelValue("Orbit pass", radarEvidence.orbit_pass);
+  metricPair(
+    { label: "VV MEAN BACKSCATTER", value: number(radarEvidence.vv_mean_db, 2, " dB"), note: "Selected orbit pass" },
+    { label: "VH MEAN BACKSCATTER", value: number(radarEvidence.vh_mean_db, 2, " dB"), note: "Selected orbit pass" },
+  );
+  paragraph(safeValue(radarEvidence.message, "Sentinel-1 SAR evidence is unavailable."), { size: 8.5 });
+  paragraph("Radar backscatter can vary with surface moisture, vegetation structure, roughness, and viewing geometry. These values are descriptive evidence only; they do not independently establish crop damage or crop loss.", { size: 8.5 });
 
   // Historical NDVI comparison with the chart and its explanation kept together.
   sectionHeading("05", "Historical vegetation comparison", 30);
@@ -756,53 +905,91 @@ function downloadFarmerReport() {
     paragraph("Hypothetical arithmetic scenario using only the values entered by the user. This is not an official insurance payout, eligibility decision, or scheme formula. Percentages are not derived from NDVI or rainfall.", { size: 8.8 });
   }
 
+  // Manual support only: the app has no insurer/PMFBY claim API connection.
+  sectionHeading(payoutScenario ? "09" : "08", "Manual claim support", 38);
+  paragraph("This tool does not submit or track insurance claims. If crop damage has occurred, contact the official PMFBY channel promptly and ask which reporting route and deadline apply to your policy, state, crop, season, and event type.", { size: 8.8 });
+  labelValue("PMFBY loss reporting and grievance helpline", "14447");
+  labelValue("Information to keep ready", "Policy ID, insured crop and area, season, event date, and any official acknowledgement or ticket number.");
+  paragraph("Keep field photographs and supporting records. This report can be shared as contextual evidence only; it is not a loss certificate, claim submission, eligibility decision, or payout calculation.", { size: 8.8 });
+  linkValue("Official PMFBY portal", "https://pmfby.gov.in/");
+  linkValue("Policy status and beneficiary report", "https://pmfby.gov.in/BeneficiaryReport/");
+
+  // Plain-language summary of the evidence already shown in this report.
+  const currentNdvi = currentAssessmentNdvi(result);
+  const historicalNdviDifference = ndviDifferenceFromBaseline(result, history.historical_average_ndvi);
+  const rainfallChange = currentRainfallChange(result);
+  const imageAvailability = imageMetadata.status === "SUCCESS" && imageData.trueColour && imageData.ndvi
+    ? "True-colour and NDVI satellite images were available for the selected period."
+    : "Satellite images were unavailable for the selected period.";
+  const evidenceSummary = [
+    `Rainfall recorded for the selected dates: ${number(weather.total_precipitation_mm, 1, " mm")}. Historical average: ${number(rainfallHistory.historical_average_mm, 1, " mm")}; change: ${percentage(rainfallChange)}.`,
+    `Current satellite vegetation reading (NDVI): ${number(currentNdvi, 4)}. Difference from the historical average: ${isNumber(historicalNdviDifference) ? `${historicalNdviDifference > 0 ? "+" : ""}${historicalNdviDifference.toFixed(4)} NDVI` : "Unavailable"}. NDVI describes vegetation, not crop loss.`,
+    imageAvailability,
+    `Provisional screening label: ${safeValue(stress.category)}; concern: ${screeningConcern(stress.category, stress.status)}. This is a prompt for field checking, not confirmation of crop damage.`,
+    "These are satellite and weather observations for the selected field and dates. Please compare them with actual field conditions; the observations alone do not prove crop loss.",
+  ];
+  const evidenceSummaryHeight = evidenceSummary.reduce((height, item) => (
+    height + wrappedLines(item, CW, 8.8).length * 4.5 + 2
+  ), 0);
+  ensureSpace(evidenceSummaryHeight + 20);
+  sectionHeading(payoutScenario ? "10" : "09", "Farmer summary: evidence in simple words", evidenceSummaryHeight);
+  evidenceSummary.forEach((item) => paragraph(item, { size: 8.8, after: 2 }));
+
   // Add consistent footers after all content and page breaks have been finalized.
   const totalPages = pdf.getNumberOfPages();
   for (let page = 1; page <= totalPages; page += 1) {
     pdf.setPage(page);
     pdf.setDrawColor(220, 228, 221);
     pdf.line(M, 283, W - M, 283);
-    pageText("SatyaCover | Farm Evidence Report", M, 290, 7.5, "normal", [100, 110, 103]);
+    pageText("Farm Evidence Report", M, 290, 7.5, "normal", [100, 110, 103]);
     pageText(`Page ${page} of ${totalPages}`, W - M, 290, 7.5, "normal", [100, 110, 103], { align: "right" });
   }
 
   const safeCrop = crop.replace(/[^a-z0-9]/gi, "_");
-  pdf.save(`SatyaCover_${safeCrop}_Farmer_Report.pdf`);
+  pdf.save(`Farm_Evidence_${safeCrop}_Report.pdf`);
 }
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <div className="brand-mark">SC</div>
+      <header className={`topbar ${activePage !== "home" ? "topbar-workspace" : ""}`}>
+        {activePage !== "home" && <button type="button" className="mobile-menu" aria-label="Toggle navigation" onClick={() => setSidebarOpen((open) => !open)}>☰</button>}
+        <div className="brand-mark">FE</div>
         <div>
-          <div className="brand-name">SatyaCover</div>
+          <div className="brand-name">Farm Evidence</div>
           <div className="brand-caption">
             Evidence for crop-loss assessment
           </div>
         </div>
 
-        <span className="top-pill">MVP · Prototype</span>
+        <nav className="top-navigation" aria-label="Main navigation">
+          {["home", "dashboard", "assessment", "results"].map((page) => <button key={page} type="button" className={activePage === page ? "nav-link active" : "nav-link"} onClick={() => navigate(page)}>{page === "home" ? "Home" : page === "dashboard" ? "Dashboard" : page === "assessment" ? "New assessment" : "Reports"}</button>)}
+        </nav>
+        <span className="top-pill">MVP · Evidence only</span>
       </header>
 
-      <main>
-        <section className="hero">
+      {activePage !== "home" && <aside className={`app-sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
+        <span className="sidebar-label">WORKSPACE</span>
+        {[{page:"dashboard",icon:"◫",label:"Overview"},{page:"dashboard",icon:"⌖",label:"My farms"},{page:"assessment",icon:"＋",label:"New assessment"},{page:"dashboard",icon:"◷",label:"Assessment history"},{page:"results",icon:"▤",label:"Reports"}].map((item,index) => <button key={`${item.label}-${index}`} type="button" className={(activePage === item.page && (item.label !== "My farms" && item.label !== "Assessment history")) ? "sidebar-link selected" : "sidebar-link"} onClick={() => navigate(item.page)}><span>{item.icon}</span>{item.label}</button>)}
+        <div className="sidebar-footnote">Prototype · Evidence requires field verification</div>
+      </aside>}
+
+      <main className={activePage !== "home" ? "page-main with-sidebar" : "page-main"}>
+        {activePage === "home" && <HomeLanding onNavigate={navigate} />}
+        {activePage === "dashboard" && <DashboardOverview result={result} onNavigate={navigate} />}
+        {(activePage === "assessment" || activePage === "results") && <>
+        <section className="hero page-hero">
           <div className="eyebrow">
-            AI + SATELLITE + WEATHER
+            {activePage === "assessment" ? "NEW FARM ASSESSMENT" : "ASSESSMENT EVIDENCE"}
           </div>
 
-          <h1>
-            Understand what happened
-            <br />
-            to your crop.
-          </h1>
+          <h1>{activePage === "assessment" ? "Start with your farm." : "Review the evidence."}</h1>
 
           <p>
-            Analyze a field location and time period to prepare
-            an evidence-led crop-health assessment.
+            {activePage === "assessment" ? "Select a field boundary and observation period to request satellite and weather evidence." : "Explore returned satellite, rainfall, and historical evidence with clear limitations."}
           </p>
         </section>
 
         <div className="content-grid">
-          <section className="panel">
+          {activePage === "assessment" && <section className="panel assessment-panel">
             <div className="section-kicker">
               01 / FIELD DETAILS
             </div>
@@ -898,6 +1085,7 @@ function downloadFarmerReport() {
 
 <FieldBoundaryDrawer
   onBoundaryChange={setFieldBoundary}
+  boundary={fieldBoundary}
 />
 
                 </MapContainer>
@@ -910,9 +1098,7 @@ function downloadFarmerReport() {
     </p>
   ) : (
     <p>
-      No farm boundary selected. The assessment will use a 100 m point buffer.
-      Draw a polygon to analyze the field boundary; clipped satellite imagery
-      requires a submitted polygon.
+      No farm boundary selected. Draw and save the actual farm polygon before submission. The map’s initial center is illustrative and is not a farmer location.
     </p>
   )}
 </div>
@@ -926,6 +1112,7 @@ function downloadFarmerReport() {
                   <input
                     name="start_date"
                     type="date"
+                    max={maxObservationDate}
                     required
                     value={form.start_date}
                     onChange={update}
@@ -938,6 +1125,7 @@ function downloadFarmerReport() {
                   <input
                     name="end_date"
                     type="date"
+                    max={maxObservationDate}
                     required
                     value={form.end_date}
                     onChange={update}
@@ -1001,9 +1189,10 @@ function downloadFarmerReport() {
                 <span>→</span>
               </button>
             </form>
-          </section>
+          </section>}
 
-          <section className="panel result-panel">
+          {activePage === "results" && <section className="panel result-panel">
+            {!result && <div className="empty-state results-empty"><div className="empty-icon">▤</div><h2>No report in this session</h2><p>Run an assessment to see real satellite and weather evidence here. Reports are not stored after the session ends.</p><button type="button" onClick={() => navigate("assessment")}>Start an assessment <span>→</span></button></div>}
             <div className="section-kicker">
               02 / EVIDENCE REPORT
             </div>
@@ -1070,12 +1259,20 @@ function downloadFarmerReport() {
   </div>
 
   <div className="metric">
-    <small>Weather records</small>
+    <small>Valid rainfall days</small>
     <strong>{isFiniteNumber(result.weather_summary?.days_returned) && result.weather_summary.days_returned > 0
-      ? result.weather_summary.days_returned
+      ? `${result.weather_summary.days_returned}${isFiniteNumber(result.weather_summary.requested_days) ? ` / ${result.weather_summary.requested_days}` : ""}`
       : "Unavailable"}</strong>
   </div>
 </div>
+{result.weather_summary?.status !== "SUCCESS" && (
+  <p className="muted" role="status">
+    {displayText(result.weather_summary?.message,
+      result.weather_summary?.status === "PARTIAL"
+        ? "Rainfall coverage is incomplete, so a period total is unavailable."
+        : "Rainfall data is unavailable for the requested period.")}
+  </p>
+)}
 
 <h3>Historical rainfall comparison</h3>
 {(() => {
@@ -1112,8 +1309,9 @@ function downloadFarmerReport() {
           {periods.length > 0 ? periods.map((period) => (
             <p className="muted" key={period.year}>
               {isFiniteNumber(period.year) ? period.year : "Year unavailable"}: {formatNumber(period.total_rainfall_mm, 1, " mm")}
+              {period.start_date && period.end_date ? ` · ${period.start_date} to ${period.end_date}` : ""}
               {isFiniteNumber(period.days_returned) && period.days_returned > 0
-                ? ` · ${period.days_returned} weather records`
+                ? ` · ${period.days_returned} valid rainfall days`
                 : " · record count unavailable"}
             </p>
           )) : <p className="muted">No year-wise historical rainfall records are available.</p>}
@@ -1191,6 +1389,30 @@ function downloadFarmerReport() {
   <p className="evidence-caveat">These values are hypothetical arithmetic scenarios based only on your inputs. They are not an official insurance payout, eligibility decision, or PMFBY formula.</p>
 </section>
 
+<section className="claim-support" aria-labelledby="claim-support-title">
+  <div className="section-kicker">MANUAL CLAIM SUPPORT · NO PORTAL CONNECTION</div>
+  <h3 id="claim-support-title">Prepare for official claim reporting</h3>
+  <p>
+    This tool cannot submit or track claims. If crop damage has occurred,
+    contact the official PMFBY channel promptly and confirm the reporting
+    route and deadline for your policy, state, crop, season, and event type.
+  </p>
+  <ol>
+    <li>Keep your policy ID, insured crop and area, season, and event date ready.</li>
+    <li>Save field photographs, supporting records, and any official acknowledgement or ticket number.</li>
+    <li>Use the assessment PDF only as contextual evidence; it does not prove loss or eligibility.</li>
+  </ol>
+  <div className="claim-support-links">
+    <a href="https://pmfby.gov.in/" target="_blank" rel="noreferrer">Official PMFBY portal</a>
+    <a href="https://pmfby.gov.in/BeneficiaryReport/" target="_blank" rel="noreferrer">Policy status / beneficiary report</a>
+    <a href="tel:14447">Call PMFBY loss reporting and grievance helpline: 14447</a>
+  </div>
+  <p className="claim-support-note">
+    Reporting deadlines and claim procedures vary. Confirm current instructions
+    with the official portal, helpline, insurer, or state authority.
+  </p>
+</section>
+
 <div className="evidence-note">
   <strong>How to interpret rainfall</strong>
   <p>
@@ -1242,11 +1464,12 @@ function downloadFarmerReport() {
     </p>
 
     <p className="muted">
-      Observation period:{" "}
+      Requested search period:{" "}
       {result.satellite_evidence.start_date ?? result.field?.start_date}
       {" to "}
       {result.satellite_evidence.end_date ?? result.field?.end_date}
     </p>
+    <p className="muted">This is the requested search interval; individual Sentinel-2 scene acquisition dates are not shown.</p>
 
 <h3>Actual Sentinel-2 imagery</h3>
 {(() => {
@@ -1265,16 +1488,32 @@ function downloadFarmerReport() {
   const legendMin = isFiniteNumber(imagery.ndvi_legend?.min) ? imagery.ndvi_legend.min : -0.2;
   const legendMax = isFiniteNumber(imagery.ndvi_legend?.max) ? imagery.ndvi_legend.max : 0.9;
   const observationPeriod = `${imagery.start_date || "Unavailable"} to ${imagery.end_date || "Unavailable"}`;
+  const beforePeriod = imagery.before_period;
+  const beforeObservationPeriod = beforePeriod?.start_date && beforePeriod?.end_date
+    ? `${beforePeriod.start_date} to ${beforePeriod.end_date}`
+    : "Unavailable";
 
   return (
     <div className="satellite-visualizations">
       <p className="muted">
-        Source: {displayText(imagery.source)} · Observation period: {observationPeriod} · Scenes: {isFiniteNumber(imagery.image_count) ? imagery.image_count : "Unavailable"}
+        Source: {displayText(imagery.source)} · Requested search period: {observationPeriod} · Scenes: {isFiniteNumber(imagery.image_count) ? imagery.image_count : "Unavailable"}
       </p>
+      <p className="muted">The displayed dates are the requested search interval, not the acquisition date of each satellite scene.</p>
+      <p className="muted">Before image: a same-length Sentinel-2 composite from immediately before the selected period. It is a visual reference; season, crop stage, cloud cover, and observation quality may differ.</p>
       <div className="satellite-image-grid">
         <figure className="satellite-figure">
           {!satelliteImagesReady ? (
-            <div className="satellite-image-unavailable">Loading true-colour image…</div>
+            <div className="satellite-image-unavailable">Loading before-period image…</div>
+          ) : beforePeriod?.status === "SUCCESS" && satelliteImageData.beforeTrueColour ? (
+            <img src={satelliteImageData.beforeTrueColour} alt={`Sentinel-2 true-colour reference before selected period, ${beforeObservationPeriod}`} loading="lazy" />
+          ) : (
+            <div className="satellite-image-unavailable">Before-period image is unavailable{beforePeriod?.message ? `: ${beforePeriod.message}` : "."}</div>
+          )}
+          <figcaption>Before · Sentinel-2 true-colour · {beforeObservationPeriod}</figcaption>
+        </figure>
+        <figure className="satellite-figure">
+          {!satelliteImagesReady ? (
+            <div className="satellite-image-unavailable">Loading selected-period image…</div>
           ) : imagery.true_colour_url && !satelliteImageErrors.trueColour ? (
             <img
               src={`${API}${imagery.true_colour_url}`}
@@ -1285,7 +1524,17 @@ function downloadFarmerReport() {
           ) : (
             <div className="satellite-image-unavailable">True-colour image is unavailable. Run the assessment again to retry.</div>
           )}
-          <figcaption>Sentinel-2 true-colour RGB composite · {observationPeriod}</figcaption>
+          <figcaption>Selected period · Sentinel-2 true-colour · {observationPeriod}</figcaption>
+        </figure>
+        <figure className="satellite-figure">
+          {!satelliteImagesReady ? (
+            <div className="satellite-image-unavailable">Loading before-period NDVI map…</div>
+          ) : beforePeriod?.status === "SUCCESS" && satelliteImageData.beforeNdvi ? (
+            <img src={satelliteImageData.beforeNdvi} alt={`NDVI map before selected period, ${beforeObservationPeriod}`} loading="lazy" />
+          ) : (
+            <div className="satellite-image-unavailable">Before-period NDVI map is unavailable.</div>
+          )}
+          <figcaption>Before · NDVI vegetation map · {beforeObservationPeriod}</figcaption>
         </figure>
         <figure className="satellite-figure">
           {!satelliteImagesReady ? (
@@ -1300,7 +1549,7 @@ function downloadFarmerReport() {
           ) : (
             <div className="satellite-image-unavailable">NDVI map is unavailable. Run the assessment again to retry.</div>
           )}
-          <figcaption>NDVI vegetation map · {observationPeriod}</figcaption>
+          <figcaption>Selected period · NDVI vegetation map · {observationPeriod}</figcaption>
         </figure>
       </div>
       <div className="ndvi-legend" aria-label={`NDVI scale from ${legendMin} to ${legendMax}`}>
@@ -1317,6 +1566,31 @@ function downloadFarmerReport() {
     </div>
   );
 })()}
+
+<h3>Sentinel-1 SAR evidence</h3>
+{(() => {
+  const radar = result.satellite_radar_evidence || {};
+  return radar.status === "SUCCESS" ? (
+    <>
+      <div className="metric-grid">
+        <div className="metric"><small>VV mean backscatter</small><strong>{formatNumber(radar.vv_mean_db, 2, " dB")}</strong></div>
+        <div className="metric"><small>VH mean backscatter</small><strong>{formatNumber(radar.vh_mean_db, 2, " dB")}</strong></div>
+        <div className="metric"><small>Usable scenes</small><strong>{isFiniteNumber(radar.image_count) ? radar.image_count : "Unavailable"}</strong></div>
+        <div className="metric"><small>Orbit pass</small><strong>{displayText(radar.orbit_pass)}</strong></div>
+      </div>
+      <p className="muted">
+        Source: {displayText(radar.source)} · Mode: {displayText(radar.instrument_mode)} · Requested search period: {displayText(radar.start_date)} to {displayText(radar.end_date)}
+      </p>
+    </>
+  ) : (
+    <div className="satellite-image-unavailable">
+      {displayText(radar.message, "Sentinel-1 SAR evidence is unavailable for this area and observation period.")}
+    </div>
+  );
+})()}
+<p className="evidence-caveat">
+  VV/VH backscatter is descriptive radar evidence. Surface moisture, vegetation structure, roughness, and viewing geometry affect it; it does not independently establish crop damage or crop loss.
+</p>
 
 <h3>Historical vegetation comparison</h3>
 
@@ -1540,10 +1814,10 @@ result.historical_comparison.status !== "SUCCESS" ? (
                 </details>
               </div>
             )}
-          </section>
+          </section>}
         </div>
 
-        <section className="workflow">
+        {activePage === "assessment" && <section className="workflow">
           <div>
             <span className="step-number">01</span>
             <strong>Field</strong>
@@ -1567,11 +1841,12 @@ result.historical_comparison.status !== "SUCCESS" ? (
             <strong>Explain</strong>
             <small>Evidence and uncertainty</small>
           </div>
-        </section>
+        </section>}
+        </>}
       </main>
 
       <footer>
-        SatyaCover · Prototype for hackathon demonstration ·
+        Farm Evidence · Prototype for demonstration ·
         Not an official insurance assessment
       </footer>
     </div>
